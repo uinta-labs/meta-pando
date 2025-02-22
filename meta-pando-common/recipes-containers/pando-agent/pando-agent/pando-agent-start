@@ -10,11 +10,12 @@ if $DOCKER ps --filter name=$CONTAINER_NAME -q; then
     if [ "$current_state" = 'running' ]; then
         exit 0;
     else
-        echo "$CONTAINER_NAME state is ${current_state}"
+        echo "$CONTAINER_NAME state is ${current_state}; will attempt to start"
     fi
 
     if timeout 60 $DOCKER start $CONTAINER_NAME; then
         echo "Started existing container"
+        exit 0
     else
         echo "Attempting to remove existing container"
         $DOCKER kill $CONTAINER_NAME || echo "Failed to kill ${CONTAINER_NAME}"
