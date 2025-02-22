@@ -1,0 +1,43 @@
+#!/bin/sh
+
+#
+# Script which configures the pandoOS_uEnv,txt to use an updated root index
+#
+
+set -o errexit
+
+# shellcheck disable=SC1091
+. /usr/sbin/pando-config-vars
+# shellcheck disable=SC1091
+. /usr/libexec/os-helpers-logging
+# shellcheck disable=SC1091
+. /usr/libexec/os-helpers-fs
+
+DURING_UPDATE=${DURING_UPDATE:-0}
+
+if [ "$DURING_UPDATE" = "1" ]; then
+	SYSROOT="/mnt/sysroot/inactive"
+else
+	SYSROOT="/mnt/sysroot/active"
+fi
+
+new_part=$(findmnt --noheadings --canonicalize --output SOURCE $SYSROOT -t ext4)
+if is_part_encrypted "${new_part}"; then
+    blockdev=$(lsblk -sJ "${new_part}" | jq -r '.blockdevices[].children[].name')
+else
+    blockdev=$(lsblk -sJ "${new_part}" | jq -r '.blockdevices[].name')
+fi
+new_part_idx=$(cat "/sys/class/block/$blockdev/partition")
+
+# Convert to hex as u-boot expects hex partition numbers. Especially needed for jetson devices
+new_part_idx=$(printf "%x" $new_part_idx)
+
+info "Switching uboot root partition index to $new_part_idx..."
+tmpfile="$(mktemp)"
+echo "pando_root_part=$new_part_idx" > ${tmpfile}
+echo "upgrade_available=$DURING_UPDATE" >> ${tmpfile}
+"${MV}" "${tmpfile}" "${PANDO_NONENC_BOOT_MOUNTPOINT}/pandoOS_uEnv.txt"
+# It is possible to get into a strange state with multiple bootcount.env files so use a delimiter to delete them all.
+# See https://github.com/snapcore/snapd/pull/5145 for more detail
+rm -f "${PANDO_NONENC_BOOT_MOUNTPOINT}"/*bootcount.env* || true
+info "Done."

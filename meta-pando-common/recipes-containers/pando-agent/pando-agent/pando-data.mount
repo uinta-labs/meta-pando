@@ -1,0 +1,13 @@
+[Unit]
+Description=pando-data bind mount
+Requires=pando-data.service pando-data-reset.service
+After=pando-data.service pando-data-reset.service
+
+[Mount]
+What=/mnt/data/pando-data
+Where=/pando-data
+Type=none
+Options=bind
+
+[Install]
+WantedBy=multi-user.target

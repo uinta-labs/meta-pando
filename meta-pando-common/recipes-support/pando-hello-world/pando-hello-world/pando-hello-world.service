@@ -1,0 +1,12 @@
+[Unit]
+Description=Pando Hello World
+Requires=pando-boot.service
+After=pando-boot.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'while true; do echo "Hello, World"; sleep 5; done'
+
+[Install]
+WantedBy=basic.target

@@ -1,0 +1,213 @@
+# Copyright 2022 Balena Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+#
+# Helper functions wrapping TPM2 manipulation
+# Functions are intentionally named hw_* as other secure element
+# implementations are expected in the future
+#
+
+EFI_IMAGE_SECURITY_DATABASE_GUID="d719b2cb-3d3a-4596-a3bc-dad00e67656f"
+EFI_GLOBAL_VARIABLE_GUID="8be4df61-93ca-11d2-aa0d-00e098032b8c"
+
+TPM_EVENTLOG_PATH="/sys/kernel/security/tpm0/binary_bios_measurements"
+
+# silence errors messages from trying unsupported TCTI backends
+#
+# tpmrm0 is for kernel managed access by multiple clients, and should be
+# preferred over the default tpm0 device, which can only be used by a single
+# process at a time
+export TPM2TOOLS_TCTI=device:/dev/tpmrm0
+
+# busybox's implementation of xxd lacks the -cols option, so remove line breaks
+_hexencode() {
+    xxd -p | tr -d '[:space:]'
+}
+
+_hexdecode() {
+    xxd -r -p
+}
+
+_sha256() {
+    sha256sum | cut -d' ' -f1
+}
+
+compute_pcr7() {
+    efivars_path="/sys/firmware/efi/efivars"
+    # the digest starts as all zeros
+    digest="$(dd if=/dev/zero bs=1 count=32 status=none | _hexencode)"
+    # these variables are always measured
+    inputs=$(cat <<-EOF
+        SecureBoot-${EFI_GLOBAL_VARIABLE_GUID}
+        PK-${EFI_GLOBAL_VARIABLE_GUID}
+        KEK-${EFI_GLOBAL_VARIABLE_GUID}
+        db-${EFI_IMAGE_SECURITY_DATABASE_GUID}
+        dbx-${EFI_IMAGE_SECURITY_DATABASE_GUID}
+EOF
+)
+    for i in $inputs; do
+        var="${efivars_path}/${i}"
+        case $i in
+            "SecureBoot-${EFI_GLOBAL_VARIABLE_GUID}") override="${1}" ;;
+            "PK-${EFI_GLOBAL_VARIABLE_GUID}") override="${2}" ;;
+            "KEK-${EFI_GLOBAL_VARIABLE_GUID}") override="${3}" ;;
+            "db-${EFI_IMAGE_SECURITY_DATABASE_GUID}") override="${4}" ;;
+            "dbx-${EFI_IMAGE_SECURITY_DATABASE_GUID}") override="${5}" ;;
+        esac
+
+        extend=$(
+            if [ -n "${override}" ]; then
+                    echo "${override}" | _hexdecode | tcgtool "$var" | _sha256
+            else
+		    # this is a workaround for tcgtool erroneously reading in
+		    # zero bytes from EFI variables during HUP -- we're not
+		    # sure what the cause is yet, but reading in with dd seems
+		    # to work fine
+                    dd if="${var}" \
+                       status=none \
+                       skip=4 \
+                       bs=1 \
+                    | tcgtool "$var" | _sha256
+            fi
+        )
+
+        digest=$(printf '%s%s' "$digest" "$extend" | _hexdecode | _sha256)
+    done
+
+    EV_SEPARATOR=$(dd if=/dev/zero bs=1 count=4 status=none | _sha256)
+    if [ -f "${TPM_EVENTLOG_PATH}" ]; then
+        # Extend our digest with any additional random events that may have been logged
+        #
+        # Some systems will log unexpected events before EV_SEPARATOR, some after,
+        # but always before EV_EFI_VARIABLE_AUTHORITY events, so stop there
+        eventlog_output="$(tpm2_eventlog $TPM_EVENTLOG_PATH)"
+        digests="$(mktemp)"
+        eventtypes="$(mktemp)"
+        # to remain compatible with POSIX sh, avoid process substitution
+        #
+        # Instead, parse the event log for PCR 7 digests and event types,
+        # trimming the first five events (SecureBoot, PK, KEK, db, dbx), and
+        # outputting to temporary files to be read in later
+        echo "$eventlog_output" | parse_pcr7_digests | tail -n +6 > "$digests"
+        echo "$eventlog_output" | parse_pcr7_eventtypes | tail -n +6 > "$eventtypes"
+
+        # attach file descriptors to the temp files for reading
+        exec 3<"$digests"
+        exec 4<"$eventtypes"
+        # loop through digests and event types, appending events until we get
+        # one that's an EFI binary signature
+        while IFS= read -r extend <&3 && IFS= read -r eventtype <&4; do \
+            if [ "$eventtype" = "EV_EFI_VARIABLE_AUTHORITY" ]; then break; fi
+            digest=$(printf '%s%s' "$digest" "$extend" | _hexdecode | _sha256)
+        done
+
+        # close fds and cleanup
+        exec 3<&-
+        exec 4<&-
+        rm "$digests" "$eventtypes"
+    else
+        digest=$(printf '%s%s' "$digest" "$EV_SEPARATOR" | _hexdecode | _sha256)
+    fi
+
+    printf '%s' "$digest"
+}
+
+parse_pcr7_digests() {
+    awk -F': ' '
+        $1 ~ /PCRIndex/ { pcr = $2 }
+        $1 ~ /AlgorithmId/ && pcr == 7 && $2 == "sha256" { digestFlag = 1 }
+        $1 ~ /Digest/ && digestFlag { gsub("\"", "", $2); print $2; digestFlag = 0 }'
+}
+
+parse_pcr7_eventtypes() {
+    awk '
+        /PCRIndex: 7/ {flag=1; next}
+        /EventNum:/ {flag=0}
+        flag && /EventType:/ {gsub("\"", ""); print $2}'
+}
+
+firmware_measures_efibins() {
+    if [ ! -f "${TPM_EVENTLOG_PATH}" ]; then
+        echo "unknown"
+    elif tpm2_eventlog "${TPM_EVENTLOG_PATH}" \
+            | parse_pcr7_eventtypes \
+            | grep -e EV_EFI_VARIABLE_AUTHORITY \
+            >/dev/null; then
+        echo "measured"
+    else
+        echo "unmeasured"
+    fi
+}
+
+print_pcr_val_bin() {
+    PCRS=$1
+    PCR_VAL_BIN=$2
+    DIGEST_SIZE=32
+    SKIP=0
+    printf " %s:\n" "sha256"
+    for pcr in $(echo "${PCRS}" | sed 's/,/ /g'); do
+        digest=$(dd if="${PCR_VAL_BIN}" bs=1 count=$DIGEST_SIZE status=none skip=$SKIP | _hexencode)
+        SKIP=$((SKIP + DIGEST_SIZE))
+        printf "   %s : %s\n" "$pcr" "$digest"
+    done
+    printf "\n"
+}
+
+hw_gen_passphrase() {
+    tpm2_getrandom 32
+}
+
+hw_encrypt_passphrase() {
+    PASSPHRASE_FILE="$1"
+    POLICY="$2"
+    OUT_DIR="$3"
+
+    # Create a primary key pair within the TPM
+    PRIMARY_CTX="${OUT_DIR}/primary.ctx"
+    tpm2_createprimary -c "${PRIMARY_CTX}"
+
+    # Create the actual key pair that will be used for encrypting the LUKS passphrase
+    # rsa2048 seems most universal, not all TPM chips support more than 2048
+    PRIVATE_KEY="${OUT_DIR}/private.key"
+    PUBLIC_KEY="${OUT_DIR}/public.key"
+    tpm2_create -C "${PRIMARY_CTX}" -G rsa2048 -r "${PRIVATE_KEY}" -u "${PUBLIC_KEY}" -L "${POLICY}"
+
+    # Load the generated key pair into the TPM
+    # The userspace tooling allows this to be done together with tpm2_create above, not needing
+    # to store the keys as files, but not all TPM chips support that.
+    KEY_CTX="${OUT_DIR}/key.ctx"
+    tpm2_load -C "${PRIMARY_CTX}" -r "${PRIVATE_KEY}" -u "${PUBLIC_KEY}" -c "${KEY_CTX}"
+
+    # Make the key persistent and save the handle
+    PERSISTENT_KEY_HANDLE="${OUT_DIR}/persistent.ctx"
+    tpm2_evictcontrol -c "${KEY_CTX}" -o "${PERSISTENT_KEY_HANDLE}"
+
+    # Encrypt the passphrase using the newly generated key pair
+    ENCRYPTED_PASSPHRASE="${OUT_DIR}/passphrase.enc"
+    tpm2_rsaencrypt -c "${PERSISTENT_KEY_HANDLE}" -o "${ENCRYPTED_PASSPHRASE}" < "${PASSPHRASE_FILE}"
+
+    # Remove unnecessary files
+    rm -f "${PRIMARY_CTX}" "${PRIVATE_KEY}" "${PUBLIC_KEY}" "${KEY_CTX}"
+}
+
+hw_decrypt_passphrase() {
+    EFI_DIR="$1"
+    AUTH="$2"
+    OUTPUT_FILE="$3"
+
+    tpm2_rsadecrypt -c "${EFI_DIR}/balena-luks.ctx" \
+                    -p "${AUTH}" \
+                    -o "${OUTPUT_FILE}" \
+                    "${EFI_DIR}/balena-luks.enc"
+}

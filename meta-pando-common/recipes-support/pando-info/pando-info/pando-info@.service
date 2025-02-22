@@ -1,0 +1,15 @@
+[Unit]
+Description=Pando info on %I
+Requires=development-features.service
+After=pando-agent.service development-features.service
+ConditionVirtualization=!docker
+ConditionPathExists=/var/volatile/development-features
+PartOf=development-features.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@BASE_BINDIR@/bash @SBINDIR@/pando-info %I
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOCKER=/usr/bin/balena
+
+CONTAINER_NAME="pando-agent"
+
+if $DOCKER ps --filter name=$CONTAINER_NAME -q; then
+    current_state=$($DOCKER ps --filter name=$CONTAINER_NAME --format '{{.State}}')
+    if [ "$current_state" = 'running' ]; then
+        exit 0;
+    else
+        echo "$CONTAINER_NAME state is ${current_state}"
+    fi
+
+    if timeout 60 $DOCKER start $CONTAINER_NAME; then
+        echo "Started existing container"
+    else
+        echo "Attempting to remove existing container"
+        $DOCKER kill $CONTAINER_NAME || echo "Failed to kill ${CONTAINER_NAME}"
+        $DOCKER rm $CONTAINER_NAME || echo "Failed to remove ${CONTAINER_NAME}"
+    fi
+fi
+
+/usr/bin/balena run \
+    --privileged \
+    --name pando-agent \
+    --restart=always \
+    --net=host \
+    --mount type=bind,source=/run/balena-engine.sock,target=/run/balena-engine.sock \
+    --mount type=bind,source=/mnt/boot/config.json,target=/boot/config.json \
+    pando-agent:preload

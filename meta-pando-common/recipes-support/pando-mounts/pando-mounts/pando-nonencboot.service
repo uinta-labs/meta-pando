@@ -1,0 +1,17 @@
+[Unit]
+Description=Pando non-encrypted boot partition mount service
+DefaultDependencies=no
+After=pando-boot.service
+Requires=pando-boot.service
+Before=umount.target
+Conflicts=umount.target
+ConditionVirtualization=!docker
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/pando-partition-mounter --mount @@PANDO_NONENC_BOOT_LABEL@@
+ExecStop=/usr/bin/pando-partition-mounter --umount @@PANDO_NONENC_BOOT_LABEL@@
+
+[Install]
+WantedBy=multi-user.target

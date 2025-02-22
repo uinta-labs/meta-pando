@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch config.json for changes
+Requires=pando-boot.service
+After=pando-boot.service
+
+[Path]
+PathChanged=/mnt/boot/config.json
+
+[Install]
+WantedBy=basic.target

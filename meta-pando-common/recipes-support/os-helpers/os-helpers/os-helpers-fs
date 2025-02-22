@@ -1,0 +1,488 @@
+# Copyright 2019 Balena Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+if [ -f "/usr/libexec/os-helpers-logging" ]; then
+. /usr/libexec/os-helpers-logging
+fi
+
+# Wait for a file to appear with loop count limit.
+# Use-case example: wait for udev to create a filesystem symlink.
+# Arguments:
+#   1 - target path
+#   2 - number of loops (each loop sleeps for 100ms)
+wait4file() {
+	_lpath="$1"
+	_lloops="$2"
+
+	while [ ! -e "$_lpath" ]; do
+		if [ "$_lloops" -gt 0 ]; then
+			sleep 0.1
+			_lloops=$((_lloops-1))
+		else
+			return 1
+		fi
+	done
+	return 0
+}
+
+# Wait for a file to be removed with loop count limit.
+# Use-case example: wait for udev to create a filesystem symlink.
+# Arguments:
+#   1 - target path
+#   2 - number of loops (each loop sleeps for 100ms)
+wait4rm() {
+	_lpath="$1"
+	_lloops="$2"
+
+	while [ -e "$_lpath" ]; do
+		if [ "$_lloops" -gt 0 ]; then
+			sleep 0.1
+			_lloops=$((_lloops-1))
+		else
+			return 1
+		fi
+	done
+	return 0
+}
+
+# Output the UUID for the specified block device.
+# Arguments:
+#   1 - Target block device
+get_dev_uuid() {
+	lsblk -nlo uuid "${1}"
+}
+
+# Output the partition UUID for the specified block device.
+# Arguments:
+#   1 - Target block device
+get_dev_partuuid() {
+	lsblk -nlo partuuid "${1}"
+}
+
+# Output the filesystem label for the specified block device.
+# Arguments:
+#   1 - Target block device
+get_dev_label() {
+	lsblk -nlo label "${1}"
+}
+
+# Output the device name for the specified file system label.
+# Arguments:
+#   1 - Filesystem label
+get_dev_path_from_label() {
+	dev=$(lsblk -nlo kname,label | grep "$1" | cut -d ' ' -f1)
+	echo "/dev/$dev"
+}
+
+# Output the device name for the specified file system label only the specified device.
+# Arguments:
+#   1 - Parent device (i.e /dev/mmcblk0)
+#   2 - Filesystem label
+get_dev_path_in_device_with_label() {
+	dev=$(lsblk -nlo kname,label "${1}" | grep "$2" | cut -d ' ' -f1)
+	echo "/dev/$dev"
+}
+
+# Returns the UUID set in cmdline for root
+# Returns:
+#   0 - root UUID found in cmdline (prints the matching uuid to stdout)
+#   1 - root uuid is not present in cmdline
+get_cmdline_root_uuid() {
+	CMDLINE="/proc/cmdline"
+	# shellcheck disable=SC2013
+	for p in $(cat "$CMDLINE"); do
+		opt="$(echo "$p" | cut -d'=' -f1)"
+		if [ "$opt" = "root" ]; then
+			opt="$(echo "$p" | cut -d'=' -f2)"
+			if [ "$opt" = "UUID" ]; then
+				echo "$p" | cut -d'=' -f3
+				return 0
+			elif [ "$opt" = "LABEL" ]; then
+				label=$(echo "$p" | cut -d'=' -f3)
+				get_dev_uuid "$(get_dev_path_from_label "${label}")"
+				return 0
+			elif [ "$opt" = "PARTUUID" ]; then
+				echo "$p" | cut -d'=' -f3
+				return 0
+			fi
+		fi
+	done
+	return 1
+}
+
+# Returns the udev symlink path for a label.
+# Argument:
+#  1 - label
+# Returns:
+#  by-state symlink udev path
+get_state_path_from_label() {
+	[ -z "$1" ] && return 1
+	[ -L "/dev/disk/by-state/${1}" ] && echo "/dev/disk/by-state/${1}" && return 0
+	[ -L "/dev/disk/by-label/${1}" ] && echo "/dev/disk/by-label/${1}" && return 0
+	[ -L "/dev/disk/by-partlabel/${1}" ] && echo "/dev/disk/by-partlabel/${1}" && return 0
+	return 1
+}
+
+# Output the filesystem type for the specified block device.
+# Arguments:
+#   1 - Target block device
+get_dev_fstype() {
+	lsblk -nlo fstype "${1}"
+}
+
+# Mount/unmount device to update mount time
+# Arguments
+#  1 - Target device
+update_mounttime() {
+    mkdir -p /run
+    tmpdir=$(mktemp -d -p /run)
+    mount "$1" "${tmpdir}"
+    umount "${tmpdir}"
+}
+
+# Set a Balena filesystem UUID to the specified device.
+# Arguments:
+#   1 - Target block device
+#   2 - Filesystem type
+# Returns:
+#   0 - Success, new UUID in stdout
+#   1 - Failure
+regenerate_uuid() {
+    dev=$1
+    # Filesystem type specific quirks
+    fstype=$2
+    case $fstype in
+        vfat)
+            # mlabel doesn't work on file directly. It needs a drive to file
+            # mapping in its configuration.
+            drive=a:
+            echo "drive ${drive} file=\"$dev\" exclusive" > /etc/mtools.conf
+            new_uuid="BDEF$(hexdump -n 2 -e '"%02X" 1 "\n"' /dev/urandom)"
+            cmd="mlabel -s -N ${new_uuid}"
+            if ! eval "${cmd}" "${drive}"; then
+                return 1
+            fi
+            ;;
+        ext*)
+            if ! e2fsck -fp "$dev"; then
+                return 1
+            fi
+            new_uuid=$(sed 's/^[^-]*/ba1eadef/' < /proc/sys/kernel/random/uuid)
+            cmd="echo y | EXT2FS_NO_MTAB_OK=1  tune2fs -e continue -U ${new_uuid}"
+            if ! eval "${cmd}" "${dev}"; then
+                return 1
+            fi
+            ;;
+        *) ;;
+        esac
+
+    new_uuid="$(get_dev_uuid "$dev")"
+    echo "${new_uuid}"
+    return 0
+}
+
+# Find partition with a given label on a given block device and output its number
+# Arguments:
+#   1 - Block device to scan
+#   2 - Label to look for
+#   3 - Field that identifies the label type - defaults to 'label' (FS label)
+#       The default should work fine but it is handy to switch to 'partlabel'
+#       on GPT devices as this does not need to rely on the underlying FS
+#       being labelled correctly.
+get_part_number_by_label() {
+    DEVICE=${1}
+    LABEL=${2}
+    FIELD=${3:-"label"}
+
+    lsblk "/dev/${DEVICE}" -nlo "name,${FIELD}" | grep "${LABEL}" | sed -e "s,^${DEVICE}p\?\([0-9][0-9]*\)[ \t]*${LABEL}$,\1,"
+}
+
+# Find partition size of a particular partition on the given block device in bytes
+# Arguments:
+#   1 - Block device
+#   2 - Partition number
+#   3 - (optional) Alignment block size
+get_part_size_by_number() {
+    DEVICE=$1
+    PART_NUMBER=$2
+    ALIGN_BLOCK_SIZE=$3
+
+    RESULT=$(parted "/dev/${DEVICE}" unit B print | grep "^[ \t]*${PART_NUMBER}[ \t][ \t]*" | awk '{print $4}' | sed -e "s,B$,,")
+
+    # Align partition size if requested
+    if [ "x${ALIGN_BLOCK_SIZE}" != "x" ]; then
+        # This rounds down, if the partition size is unaligned
+        # multiplying back will be less than original.
+        # If that is the case add one more block
+        ALIGN_BLOCKS=$["${RESULT}" / "${ALIGN_BLOCK_SIZE}"]
+        if [ "$[${ALIGN_BLOCKS} * ${ALIGN_BLOCK_SIZE}]" -lt "${RESULT}" ]; then
+            RESULT="$[(${ALIGN_BLOCKS} + 1) * ${ALIGN_BLOCK_SIZE}]"
+        fi
+    fi
+
+    echo "${RESULT}"
+}
+
+# Find partition start of a particular partition on the given block device in bytes
+# Arguments:
+#   1 - Block device
+#   2 - Partition number
+get_part_start_by_number() {
+    DEVICE=$1
+    PART_NUMBER=$2
+
+    parted "/dev/${DEVICE}" unit B print | grep "^[ \t]*${PART_NUMBER}[ \t][ \t]*" | awk '{print $2}' | sed -e "s,B$,,"
+}
+
+# Find the partition table type of the given block device
+# Arguments:
+#    1 - Block device
+get_part_table_type() {
+    parted -s "$1" print | grep "Partition Table" | tr -d " " | cut -d ":" -f2
+}
+
+# Resolve the internal installation device
+# Arguments:
+#    1 - Internal device glob
+get_internal_device() {
+  # redirect lsblk error to null as when rootf is a memory device we expect the error
+  _current_root=$(findmnt --noheadings --canonicalize --output SOURCE / | xargs lsblk -no pkname 2> /dev/null || true)
+  for device_pattern in ${1}; do
+    info "Searching for devices matching pattern /dev/${device_pattern}"
+    # shellcheck disable=SC2046
+    ! IFS=$'\n' read -rd '' -a devices <<< \
+        "$(ls $(eval echo "/dev/${device_pattern}") 2>/dev/null)"
+    for device in "${devices[@]}"; do
+      if [[ "/dev/${_current_root}" = "${device}" ]]; then
+          info "${device} is our install media, skip it..."
+          continue
+      fi
+      if ! fdisk -l "${device}" > /dev/null 2>&1; then
+        inform "${device} has no media attached"
+        continue
+      fi
+      if test -b "$(readlink -f "${device}")"; then
+          if ! [[ "${device_pattern}" = md/* ]]; then
+            if command -v "mdadm" > /dev/null; then
+              if mdadm --examine "${device}" | grep -q Array; then
+                  info "${device} is part of an existing RAID array" \
+        "that wasn't specified by name, skip it..."
+                  continue
+              fi
+            fi
+          fi
+
+          echo "${device}"
+          break 2
+        else
+        info "$device is not a block device, skipping"
+      fi
+    done
+  done
+}
+
+wait4udev() {
+    # Wait for udev processing of a DM device to finish
+    #
+    # After cryptsetup luksOpen returns to shell, udev events initializing
+    # the DM device are still being generated in the background.
+    # 95-dm-notify.rules will notify dmsetup when udev processing is finished
+    # but we found no way to hook to this from shell.
+    #
+    # This function waits for a particular udev env variable to be defined
+    # on the specified device. This is not the cleanest solution but it works
+    # for this use-case - it indicates the last necessary udev event is being
+    # processed and, if necessary from a shell, a subsequent settle will block
+    # until the processing finishes.
+    #
+    # The function will fail if the variable does not appear in a reasonable amount of time.
+
+    DM_DEVICE="$1"
+
+    I=0
+    # DM_UDEV_RULES_VSN is the last variable that 10-dm.rules defines for an active device
+    while ! udevadm info "${DM_DEVICE}" | grep -q "DM_UDEV_RULES_VSN=2"; do
+        if [ "${I}" -gt 4 ]; then
+            return 1
+        fi
+
+        sleep 1
+        I=$["${I}" + 1]
+    done
+
+    return 0
+}
+
+# Generates a fingerprint file on the fly for boot partitions,
+# ignoring config.json files.
+# Arguments:
+#   Directoty path - trailing slashes are removed
+# Output:
+#   A ${PANDO_FINGERPRINT_FILENAME}/${PANDO_FINGERPRINT_EXT} file where
+#   entries have no path prefix.
+generate_bootpart_fingerprint() {
+    FSDIR="${1%/}"
+    tmpfp=$(mktemp)
+    info "Generating fingerprint file for $FSDIR"
+    rm -rf ${FSDIR}/@@PANDO_FINGERPRINT_FILENAME@@.@@PANDO_FINGERPRINT_EXT@@
+    find ${FSDIR} -xdev -type f \
+        ! -name @@PANDO_FINGERPRINT_FILENAME@@.@@PANDO_FINGERPRINT_EXT@@ \
+        ! -name config.json \
+        -exec md5sum {} \; | sed "s#${FSDIR}/##g" | \
+        sort -k2 > "${tmpfp}"
+        mv "${tmpfp}" ${FSDIR}/@@PANDO_FINGERPRINT_FILENAME@@.@@PANDO_FINGERPRINT_EXT@@
+        sync -f "${FSDIR}"
+}
+
+# Identify an encrypted partition using dmsetup
+# Works for both dm-crypt and LUKS encrypted partitions
+# Arguments:
+# 1: Partition device - will be converted to a DM device
+# Returns:
+# 0: The partition device is encrypted
+# 1: The partition device is not encrypted
+is_part_encrypted() {
+	_part="${1#/dev/}"
+	_dm_part="${_part}"
+	if command -v dmsetup > /dev/null; then
+		if [ "${_part#dm-}" = "${_part}" ]; then
+			# Does not start with dm-
+			if [ "${_part#mapper/}" = "${_part}" ]; then
+				# Does not start with mapper/
+				# Find the corresponding DM device to the partition
+				_dm_part=$(lsblk -nlo kname "/dev/${_dm_part}" | grep dm)
+				if [ -z "${_dm_part}" ]; then
+					# No corresponding DM device, no dm-crypt in use
+					return 1
+				fi
+			fi
+		fi
+		# _dm_part is a DM device, either dm* or mapper/*
+		_name=$(lsblk -nlo name "/dev/${_dm_part}")
+		if dmsetup ls --target crypt | grep -q "${_name}"; then
+			return 0
+		fi
+	fi
+	return 1
+}
+
+# Identify a LUKS encrypted partition
+# Partitions encrypted with dm-crypt do not have a LUKS header
+# and will not identify as crypto_LUKS.
+# Arguments:
+# 1: Partition device
+# Returns:
+# 0: It is a LUKS encrypted partition
+# 1: It is not a LUKS encrypted partition (could be not encrypted)
+is_luks() {
+	_part="${1#/dev/}"
+	_part="/dev/$_part"
+	if lsblk -nlo fstype "${_part}" | grep -q "crypto_LUKS"; then
+		return 0
+	fi
+	return 1
+}
+
+# Skip files listed on the encrypted boot partition file list when
+# deploying files to the boot partition.
+# Most device types will call this from the do_skip() function in their
+# custom os-helpers-sb file. EFI devices in particular do not need this
+# as the non-encrypted files are separated into its own folder so they
+# do not need to be specified on a list.
+# Arguments:
+#  $1: File to check
+# Returns:
+# 0: Skip the file
+# 1: Move the file
+#
+# Note that files will only be skipped if called from a script that does not
+# deploy to /mnt/boot, so named differently from the default 1-bootfiles.
+skip_nonencrypted_boot_files() {
+	_file="$1"
+	for b in $PANDO_NONENCRYPTED_BOOT_PARTITION_FILES; do
+		# See if file is in the non-encrypted boot partition file list
+		if [ "$b" = "$(basename "$_file")" ]; then
+			# If so, skip (return 0) if running the 1-bootfiles script that copies files
+			# to the non-encrypted /mnt/boot partition
+			# If running a different script, return 1 not to skip it
+			test "$(basename $0)" = "1-bootfiles"
+			return
+		fi
+	done
+	# The file is in the encrypted boot partition file list, so do not skip (return 1) if running
+	# the 1-bootfiles script that copies files to the encrypted /mnt/boot partition
+	# If running a different script, return 0 to skip it
+	test "$(basename "$0")" != "1-bootfiles"
+}
+
+# Split the boot partition in an encrypted and a non-encrypted partition, with
+# the list of files to place in the non-encrypted partition listed in the
+# PANDO_NONENCRYPTED_BOOT_PARTITION_FILES variable.
+#
+# Platforms that natively separate the files that bootROMs need to access
+# into a different folder, like EFI, will need to implement their own version.
+# All other platforms should use this implementation.
+#
+# This is typically called from the resin-init-flasher bootpart_split()
+# function when performing the splitting of boot partitions at installation
+# time.
+split_bootpartition() {
+    # Split the boot partition in an encrypted and non-encrypted partition
+    # Encrypted pando-boot already mounted in $INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT
+    NONENC_BOOT_MOUNT_DIR="$(mktemp -d)"
+    NONENC_BOOT_MOUNT=$(get_dev_path_in_device_with_label "${internal_dev}" "${PANDO_NONENC_BOOT_LABEL}")
+    if ! mount "${NONENC_BOOT_MOUNT}" "$NONENC_BOOT_MOUNT_DIR"; then
+        fail "Failed to mount disk labeled as ${PANDO_NONENC_BOOT_LABEL}."
+    fi
+
+    # Move all to be encrypted files to encrypted boot partition
+    for FILE in "$NONENC_BOOT_MOUNT_DIR/"*; do
+        _file=$(basename "$FILE")
+        if [[ "${PANDO_NONENCRYPTED_BOOT_PARTITION_FILES}" == *"${_file}"* ]]; then
+            continue
+        fi
+
+        mv "$FILE" "$INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/"
+    done
+
+    # Store files necessary for TPM decryption to the unencrypted partitions
+    mv "${ENC_PASSPHRASE_FILE}" "$NONENC_BOOT_MOUNT_DIR/balena-luks.enc" && sync
+
+    rm -rf "$TPM_RESULT_DIR"
+
+    # Regenerate fingerprint in both partitions
+    generate_bootpart_fingerprint "${NONENC_BOOT_MOUNT_DIR}"
+    generate_bootpart_fingerprint "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}"
+
+    # Do not umount - flasher script will still copy configuration files
+}
+
+erase_disk() {
+    tdisk="${1}"
+    info "Erasing disk ${tdisk}"
+    _sector_size=$(lsblk -nlbo NAME,PHY-SEC,TYPE "/dev/${tdisk}" | grep disk |  awk '{print $2}')
+    _size=$(lsblk -nlbo NAME,SIZE,TYPE "/dev/${tdisk}" | grep disk |  awk '{print $2}')
+    _size_in_sectors=$( expr ${_size} / ${_sector_size} )
+    # Overwrite default LUKS2 header size of 16 MiB
+    _erased_sectors=$( expr 16 \* 1024 \* 1024 / ${_sector_size} )
+    # Erase the first sectors in each partition
+    for _ss in $(parted "/dev/${tdisk}" unit s print | awk '/^[ 0-9]/ {sub("s", ""); print $2}'); do
+            dd if=/dev/urandom of="/dev/${tdisk}" bs="${_sector_size}" count="${_erased_sectors}" seek="${_ss}" conv=sync
+    done
+    # Erase partition table
+    # GPT reserves 34 sector at the start of disk and end of disk as backup
+    GPT_RESERVED_LBA=34
+    dd if=/dev/urandom of="/dev/${tdisk}" bs="${_sector_size}" count="${GPT_RESERVED_LBA}" conv=sync
+    dd if=/dev/urandom of="/dev/${tdisk}" bs="${_sector_size}" seek="$(expr "${_size_in_sectors}" - "${GPT_RESERVED_LBA}" )" count="${GPT_RESERVED_LBA}" conv=sync
+}

@@ -1,0 +1,15 @@
+[Unit]
+Description=Pando state partition mount service
+DefaultDependencies=no
+Before=umount.target
+Conflicts=umount.target
+ConditionVirtualization=!docker
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/pando-partition-mounter --mount pando-state
+ExecStop=/usr/bin/pando-partition-mounter --umount pando-state
+
+[Install]
+WantedBy=multi-user.target

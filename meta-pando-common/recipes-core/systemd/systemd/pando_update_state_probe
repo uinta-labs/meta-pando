@@ -1,0 +1,105 @@
+#!/bin/sh
+
+# Copyright 2019 Balena Ltd.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# shellcheck disable=SC2039
+set -o errexit
+set -o pipefail
+
+[ -z "$1" ] || [ -z "$2" ] && exit 1
+
+# shellcheck disable=SC1091
+. /usr/libexec/os-helpers-fs
+
+part=$1
+label=$2
+parent=$3
+
+valid_device() {
+	p=$1
+	if [ "${p#/dev/dm}" = "$p" ] && [ "${p#/dev/md}" = "$p" ]; then
+		return 1
+	fi
+}
+
+[ -z "${parent}" ] && ! valid_device "${part}" && exit 1
+
+# If the UUIDs have been regenerated in this boot, the root UUID is stored
+# on a temporary file, otherwise fetch from the kernel command line
+if [ -d "/run/initramfs" ]; then
+	# Avoid a race condition between udev and writing the file
+	wait4rm "/run/initramfs/bootparam_root.mux" 30
+	new_root="/run/initramfs/bootparam_root"
+else
+	# Older releases do not create /run and use /tmp instead
+	new_root="/tmp/initramfs/bootparam_root"
+fi
+if [ -f "${new_root}" ]; then
+	ruuid=$(cat "${new_root}" | cut -c6-)
+else
+	ruuid=$(get_cmdline_root_uuid)
+fi
+# Determine if the partition is on the same drive as root
+rpdev=""
+
+# Look for the filesystem by UUID
+# lsblk returns multiple entries when the root is on RAID1
+# (the virtual MD device and each of the members).
+# Loop through the candidates and ignore RAID members.
+# This will also randomly choose the first device that matches the UUID
+# if multiple devices with the same filesystem UUID are connected
+# (e.g. a cloned drive).
+for cand in $(lsblk -nlo pkname,uuid | grep "${ruuid}" | cut -d " " -f1); do
+	cand_fstype=$(lsblk "/dev/${cand}" -ndlo fstype) || true
+	if [ "${cand_fstype}" = "linux_raid_member" ]; then
+		continue
+	fi
+
+	rpdev="${cand}"
+	break
+done
+
+if [ -n "${rpdev}" ]; then
+	if is_part_encrypted "${rpdev}"; then
+		if ! is_luks "${rpdev}"; then
+			rpdev="${part#/dev/}"
+		fi
+		cryptdev_uuid=$(lsblk -nlo uuid,kname | grep "${rpdev}" | cut -d " " -f1) || true
+		if [ -n "${cryptdev_uuid}" ]; then
+			rpdev=$(lsblk -nlo pkname,uuid | grep "${cryptdev_uuid}" | cut -d " " -f1) || true
+		fi
+	fi
+fi
+if [ "${rpdev}" = "${parent}" ] || valid_device "${part}"; then
+	echo "PANDO_FS_USE=${label}"
+	# Determine if its the active or inactive partition. The active one's
+	# UUID is passed by the bootloader in the kernel command line
+	case $label in
+		pando-root*)
+			rdev=$(lsblk -nlo kname,uuid \
+				| grep "${parent}" \
+				| grep "${ruuid}" \
+				| cut -d " " -f1)
+			if [ "/dev/${rdev}" = "${part}" ]; then
+				echo "PANDO_UPDATE_STATE=active"
+			else
+				echo "PANDO_UPDATE_STATE=inactive"
+			fi
+			;;
+		*) ;;
+	esac
+	exit 0
+fi
+exit 0

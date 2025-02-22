@@ -1,0 +1,15 @@
+[Unit]
+Description=Pando Device UUID
+Requires=pando-boot.service
+After=pando-boot.service
+# Requires=pando-boot.service home-root-.rnd.mount
+# After=pando-boot.service home-root-.rnd.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment="HOME=/home/root"
+ExecStart=@BASE_BINDIR@/bash @BINDIR@/pando-unique-key uuid
+
+[Install]
+WantedBy=basic.target

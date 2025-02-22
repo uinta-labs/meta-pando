@@ -1,0 +1,12 @@
+[Unit]
+Description=Pando Hostname Configuration
+Requires=pando-boot.service pando-device-uuid.service bind-etc-hostname.service
+After=pando-boot.service pando-device-uuid.service bind-etc-hostname.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@BINDIR@/pando-hostname
+
+[Install]
+WantedBy=basic.target

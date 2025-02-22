@@ -1,0 +1,22 @@
+#!/bin/bash
+
+set -ex
+
+SYSROOT="/mnt/sysroot/inactive"
+
+balenad -s=@BALENA_STORAGE@ --data-root="$SYSROOT/balena" -H unix:///run/balena-host.sock --iptables=false &
+pid=$!
+sleep 5
+
+hostapp-update -f /input -n
+
+kill $pid
+wait $pid
+
+df -h ${SYSROOT}
+df -h /output
+
+ls -lh "${SYSROOT}"
+du -sh "${SYSROOT}"
+
+mkfs.ext4 -F -E lazy_itable_init=0,lazy_journal_init=0 -i 8192 -d "$SYSROOT" /output 4194304

@@ -1,0 +1,12 @@
+[Unit]
+Description=Pando active root partition mount service
+DefaultDependencies=no
+Before=umount.target
+Conflicts=umount.target
+ConditionVirtualization=!docker
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/pando-partition-mounter --sysroot --mount active
+ExecStop=/usr/bin/pando-partition-mounter --sysroot --umount active

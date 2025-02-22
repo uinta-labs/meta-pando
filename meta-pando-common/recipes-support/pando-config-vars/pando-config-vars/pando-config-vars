@@ -1,0 +1,158 @@
+#!/bin/sh
+
+help () {
+    cat << EOF
+Script for setting pando shell environment
+pando-config-vars [options]
+
+Options:
+    -h, --help
+        Display this help and exit.
+
+    -c, --config-path CONFIG_PATH
+        Use a non default config.json file.
+        Default: /mnt/boot/config.json
+
+    -n, --no-cache
+        Recreate cache
+        Default: Uses cache if present
+EOF
+}
+
+USE_CACHE=1
+# Parse arguments
+while [ "$#" -gt "0" ]; do
+    key=$1
+    case $key in
+        -h|--help)
+            help
+            exit 0
+            ;;
+        -c|--config-path)
+            CONFIG_PATH=$2
+            shift
+            ;;
+
+        -n|--no-cache)
+            USE_CACHE=0
+            ;;
+        *)
+            echo "[WARNING] $0 : Argument '$1' unknown. Ignoring."
+            ;;
+    esac
+    shift
+done
+
+# Source static defaults
+. /usr/sbin/pando-config-defaults
+
+fatcp() {
+    /usr/bin/fatrw copy "${1}" "${2}"
+}
+
+unsafe_fatcp() {
+    /usr/bin/fatrw -u copy "${1}" "${2}"
+}
+
+fatmv() {
+    fatcp "${1}" "${2}" && rm -f "${1}" && sync
+}
+
+fatcat() {
+    /usr/bin/fatrw read "${1}"
+}
+
+fatwr() {
+    /usr/bin/fatrw write "${1}"
+}
+
+if command -v "/usr/bin/fatrw" > /dev/null; then
+    CP=fatcp
+    UCP=unsafe_fatcp
+    MV=fatmv
+    CAT=fatcat
+    WR=fatwr
+else
+    CP=cp
+    UCP=cp
+    MV=mv
+    CAT=cat
+    WR=tee
+    echo "[WARN] $0: Missing fatrw command"
+fi
+
+# Parse the configuration path into the CONFIG_PARAMS variable
+#
+# Returns: 0 if CONFIG_PARAMS is not empty, 1 if it is empty
+#
+read_config() {
+    if [ -f "$CONFIG_PATH" ]; then
+        CONFIG_PARAMS=$("${CAT}" "${CONFIG_PATH}" | jq -r '@sh "
+             CONFIG_HOSTNAME=\(.hostname // "")
+             COUNTRY=\(.country // "")
+             DELTA_ENDPOINT=\(.deltaEndpoint // "")
+             DEVICE_API_KEY=\(.deviceApiKey // "")
+             DEVICE_ID=\(.deviceId // "")
+             DEVICE_TYPE=\(.deviceType // "")
+             DNS_SERVERS=\(.dnsServers // "8.8.8.8")
+             HOSTEXT_IMAGES=\(.hostappExtensions // "")
+             LISTEN_PORT=\(.listenPort // "")
+             NTP_SERVERS=\(.ntpServers // "")
+             OS_NET_CONN_INTERVAL=\(.os.network.connectivity.interval // 3600)
+             OS_NET_CONN_RESPONSE=\(.os.network.connectivity.response // "")
+             OS_NET_CONN_URI=\(.os.network.connectivity.uri // "")
+             OS_NET_WIFI_MACSCAN=\(.os.network.wifi.randomMacAddressScan)
+             OS_FAN_PROFILE=\(.os.fan.profile // "")
+             OS_POWER_MODE=\(.os.power.mode // "")
+             PERSISTENT_LOGGING=\(.persistentLogging // false)
+             PROVISIONING_API_KEY=\(.apiKey // "")
+             REGISTERED_AT=\(.registered_at // "")
+             UUID=\(.uuid // "")
+             "')
+        RESULT=$?
+        if [ "$RESULT" = "4" ]; then
+            echo "[ERROR] $0: Failed to parse '$CONFIG_PATH'."
+            exit 1
+        fi
+        test -n "${CONFIG_PARAMS}"
+    else
+        echo "[ERROR] $0 : '$CONFIG_PATH' not found."
+        exit 1
+    fi
+}
+
+if [ "${USE_CACHE}" -eq "1" ] && [ -n "${PANDO_CONFIG_VARS_CACHE}" ] && [ -f "${PANDO_CONFIG_VARS_CACHE}" ]; then
+        . "${PANDO_CONFIG_VARS_CACHE}"
+else
+    [ -n "${PANDO_CONFIG_VARS_CACHE}" ] && [ -f "${PANDO_CONFIG_VARS_CACHE}" ] && rm -f "${PANDO_CONFIG_VARS_CACHE}"
+
+    # If config.json provides redefinitions for our vars let us rewrite their
+    # runtime value
+    if ! read_config; then
+        # Re-try once
+        if ! read_config; then
+            echo "[ERROR] $0: Failed to read '$CONFIG_PATH'."
+            exit 1
+        fi
+    fi
+    if [ -n "${PANDO_CONFIG_VARS_CACHE}" ] && [ -n "${CONFIG_PARAMS}" ]; then
+        tmpfile=$(mktemp)
+        echo "${CONFIG_PARAMS}" | sed -e 's/^[[:space:]]*//' > "${tmpfile}"
+        chmod a+rx "${tmpfile}"
+        mv "${tmpfile}" "${PANDO_CONFIG_VARS_CACHE}"
+    fi
+    eval "$CONFIG_PARAMS"
+fi
+
+# "null" is a valid setting in config.json that should write
+# an empty string for dns servers rather than the defaults
+if [ "$DNS_SERVERS" = "null" ]; then
+    DNS_SERVERS=""
+fi
+
+# Set additional default values.
+if [ -z "$OS_NET_CONN_URI" ]; then
+    if [ -n "$API_ENDPOINT" ]; then
+        OS_NET_CONN_URI="$API_ENDPOINT/connectivity-check"
+    fi
+fi

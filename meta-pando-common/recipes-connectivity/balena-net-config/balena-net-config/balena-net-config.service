@@ -1,0 +1,13 @@
+[Unit]
+Description=Pando network configure service
+Requires=pando-boot.service bind-etc-NetworkManager-system-connections.service bind-etc-NetworkManager-dispatcher.d.service
+After=pando-boot.service bind-etc-NetworkManager-system-connections.service bind-etc-NetworkManager-dispatcher.d.service
+
+[Service]
+ExecStart=@BASE_BINDIR@/bash @BINDIR@/balena-net-config
+Type=oneshot
+RemainAfterExit=yes
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

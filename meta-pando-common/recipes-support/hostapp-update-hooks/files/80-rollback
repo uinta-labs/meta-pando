@@ -1,0 +1,41 @@
+#!/bin/sh
+
+#
+# Script which handles automated os rollbacks functionality
+#
+
+set -o errexit
+
+# shellcheck disable=SC1091
+. /usr/sbin/pando-config-vars
+# shellcheck disable=SC1091
+. /usr/libexec/os-helpers-logging
+
+info "Running rollback hook"
+
+DURING_UPDATE=${DURING_UPDATE:-0}
+
+if [ ! -d "$PANDO_BOOT_MOUNTPOINT" ]; then
+        fail "hostapp rollback: $PANDO_BOOT_MOUNTPOINT doesn't exist."
+fi
+if [ ! -d "$PANDO_NONENC_BOOT_MOUNTPOINT" ]; then
+        fail "hostapp rollback: $PANDO_NONENC_BOOT_MOUNTPOINT doesn't exist."
+fi
+
+# Are we updating or falling back?
+if [ "$DURING_UPDATE" = 1 ]; then
+        touch /mnt/state/rollback-health-breadcrumb
+        touch /mnt/state/rollback-altboot-breadcrumb
+        rm -f /mnt/state/rollback-health-triggered || true
+        rm -f /mnt/state/rollback-altboot-triggered || true
+        rm -f /mnt/state/rollback-health-failed || true
+else
+        rm -f /mnt/state/rollback-health-variables || true
+        rm -f /mnt/state/rollback-altboot-breadcrumb || true
+        rm -f /mnt/state/rollback-health-breadcrumb || true
+        rm -f /mnt/state/rollback-health-triggered || true
+        rm -f /mnt/state/rollback-altboot-triggered || true
+        rm -f /mnt/state/rollback-health-failed || true
+fi
+
+sync -f /mnt/state

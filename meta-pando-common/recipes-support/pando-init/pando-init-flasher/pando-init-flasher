@@ -1,0 +1,609 @@
+#!/bin/bash
+#
+# Script which burns an image from an external device to an internal device
+# Assumptions:
+#   * image is in boot partition of external device
+#   * all needed variables are configured in pando-init-flasher.conf
+#   * filesystems labeling scheme is persistent (flasher-*/pando-*)
+# Variables in pando-init-flasher.conf
+#  INTERNAL_DEVICE_KERNEL                 - internal device (enumerated by kernel) to be flashed
+#                                             * it's impossible to known what dev to flash because
+#                                               we don't have any labels before flashing something
+#                                               so we need this info
+#                                             * when multiple entries provided, the first block device
+#                                               found will be used
+#  INTERNAL_DEVICE_BOOTLOADER_CONFIG      - name of the bootloader config for internal media boot
+#  INTERNAL_DEVICE_BOOTLOADER_CONFIG_PATH - relative path to internal boot partition where
+#                                               INTERNAL_DEVICE_BOOTLOADER_CONFIG will be copied to
+#  PANDO_IMAGE                            - image to be flashed on internal device
+#                                             * this is defaulted to
+#                                               pando-image-${MACHINE}.pandoos-img and should be
+#                                               just fine
+#  BOOTLOADER_FLASH_DEVICE                - device where bootloader binary will be flashed
+#                                             * this variable should be set together with
+#                                               BOOTLOADER_IMAGE
+#                                             * if this variable is not set we DO NOT flash u-boot
+#                                               to internal flash device
+#  BOOTLOADER_IMAGE                       - name of the u-boot binary
+#  BOOTLOADER_BLOCK_SIZE_OFFSET           - offset at which we write u-boot binary
+#  BOOTLOADER_SKIP_OUTPUT_BLOCKS          - number of blocks to skip when writing bootloader
+#                                             * this is the seek param to dd
+#  POSTINSTALL_REBOOT                      - The default flasher behaviour is to shutdown after install,
+#                                           but some use cases like migration requires a reboot.
+#
+#  Certain hardware requires that the bootloader is split into MLO and u-boot.img rather than having
+# it all bundled in a u-boot.img binary. To address this requirement, this flashing script will further
+# look for variables called BOOTLOADER_FLASH_DEVICE_1, BOOTLOADER_IMAGE_1, BOOTLOADER_BLOCK_SIZE_OFFSET_1,
+# BOOTLOADER_SKIP_OUTPUT_BLOCKS_1 to be used in the same way as BOOTLOADER_FLASH_DEVICE, BOOTLOADER_IMAGE,
+# BOOTLOADER_BLOCK_SIZE_OFFSET, BOOTLOADER_SKIP_OUTPUT_BLOCKS so that user can specify both MLO and u-boot
+# to be written in the respective devices.
+#
+# Secure boot and disk encryption interface
+# =========================================
+#
+# Setting up a system for secure boot and disk encryption is controlled by the global `SIGN_API` variable.
+#
+# A device specific interface is provided in the following include files:
+#  * pando-init-flasher-secureboot: Function hooks related to the secure boot setup
+#     * secureboot_setup
+#       * Secure boot setup mode
+#       * Key enrollment
+#       * Secure boot mode checks
+#     * bootpart_split
+#       * Split boot partition into encrypted and non-encrypted partitions
+#     * secureboot_bootloader_setup
+#       * Hook for secureboot bootloader setup
+#     * secureboot_bootloader_postsetup
+#       * Hook for secureboot bootloader post-setup
+#  * pando-init-flasher-diskenc: Function hooks related to the disk encryption setup.
+#     * diskenc_setup
+#       * Generate and encrypt disk encryption keys
+#
+
+set -e
+
+# Very long variables :)
+INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT=/tmp/internal_boot
+FLASHER_CONF_FILE=/etc/pando-init-flasher.conf
+CRYPT=0
+BOOT_ENTRY_LABEL="Pando OS"
+
+# shellcheck disable=SC1091
+. /usr/libexec/os-helpers-fs
+# shellcheck disable=SC1091
+. /usr/libexec/os-helpers-logging
+# shellcheck disable=SC1091
+[ -f /usr/libexec/os-helpers-power ] && . /usr/libexec/os-helpers-power
+
+function clean {
+    echo "[pando-init-flasher] Cleanup."
+    umount $INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT > /dev/null 2>&1 || true
+    umount $INTERNAL_DEVICE_CONF_PART_MOUNTPOINT > /dev/null 2>&1 || true
+}
+
+trap clean ERR
+
+function report_progress() {
+    _ratio="${1}"
+    _msg="${2}"
+
+    if command -v "pando-device-progress"  > /dev/null && [ -n "${API_ENDPOINT}" ]; then
+        pando-device-progress --percentage "${_ratio}" --state "${_msg}" || true
+    else
+        info "Unprovisioned: Percentage ${_ratio}, status ${_msg}"
+    fi
+}
+
+function dd_with_progress {
+    SRC=$1
+    DEST=$2
+    OFFSET=$3
+    TOTAL_SIZE=$4
+
+    dd "if=$SRC" "of=$DEST" conv=sparse bs=4M 2> /tmp/dd_progress_log & DD_PID=$!
+
+    if ! kill -0 $DD_PID; then
+        # dd might have been too fast, let's check exit status if it is no longer running
+        if ! ps | grep "^ *$DD_PID " && wait "$DD_PID"; then
+            # dd is not running and the exitcode was 0, dd completed too fast to report progress
+            return
+        fi
+
+        # Either dd is still running or exit status reported error
+        fail "Failed to flash internal device $INTERNAL_DEVICE_KERNEL."
+    fi
+
+    # Give dd chance to register the signal handler
+    # This was originally hidden behind determining image size
+    sleep 1
+
+    while kill -USR1 $DD_PID 2>/dev/null; do
+        sleep 3
+        if [ ! -s /tmp/dd_progress_log ]; then
+            continue
+        fi
+        WRITTEN_BYTES=$(awk 'END{print $1}' /tmp/dd_progress_log)
+        TOTAL_WRITTEN_BYTES=$["$WRITTEN_BYTES" + "$OFFSET"]
+        let RATIO=$TOTAL_WRITTEN_BYTES*100/$TOTAL_SIZE || true
+        report_progress "${RATIO}" "Flashing pandoOS on internal media"
+        truncate -s 0 /tmp/dd_progress_log
+    done
+}
+
+function verify_image_signature() {
+    IMAGE="$1"
+
+    # The original idea was to use `keyctl pkey_verify` against a trusted key
+    # that we add into the kernel trust store at build time, but this does
+    # not work. The key ends up in the .builtin_trusted_keys keyring,
+    # and even though it is a public key, it is somehow protected by the kernel
+    # and even root is not able to use it. The only information that the kernel
+    # provides about the certificate is the OCSP hash of the public key.
+    # Since we ship the certificate in plain form in the boot partition, we can
+    # use the hash to confirm that the key is the same, and use it to verify
+    # the signature from userspace.
+    IMAGE_SIG="${IMAGE}.sig"
+    BOOT_PART_CERT="/mnt/boot/pando-keys/kmod.crt"
+
+    if [ ! -f "${IMAGE_SIG}" ]; then
+        fail "No signature found for image '${IMAGE}'"
+    fi
+
+    if [ ! -f "${BOOT_PART_CERT}" ]; then
+        fail "Signing certificate not found in the boot partition"
+    fi
+
+    # `openssl x509 -ocspid` returns multiple hashes, we are looking
+    # for the hash of the public key
+    BOOT_PART_CERT_HASH=$(openssl x509 -noout -ocspid -in "${BOOT_PART_CERT}" | grep "key" | sed -e "s,^[^:]*: *,,")
+
+    # We expect a SHA1 hash, make sure we got 40 characters as a sanity check
+    if [ $(echo -n "${BOOT_PART_CERT_HASH}" | wc -c) != "40" ]; then
+        fail "Unable to get OCSP hash of the public key from '${BOOT_PART_CERT}'"
+    fi
+
+    # The same certificate should be enrolled in the kernel trust store
+    # Let's see if we can find it, we want
+    # * The same hash (case insensitive)
+    # * The key must be asymmetric
+    # * The key must contain "PandoOS" in the subject
+    # * Flags must be "I------" - TL;DR the key is loaded and not revoked,
+    #   this is what built-in keys have, see `man keyrings` for semantics.
+    KERNEL_CERT=$(cat /proc/keys | grep -i "${BOOT_PART_CERT_HASH}" | grep "asymmetri" | grep "PandoOS" | grep "I------")
+
+    if [ $(echo "${KERNEL_CERT}" | wc -l) != "1" ]; then
+        fail "Unable to match '${BOOT_PART_CERT}' against the kernel trust store"
+    fi
+
+    # At this point we are confident that the certificate in the boot
+    # partition matches the one loaded into the kernel at build time.
+
+    # Calculate a SHA256 digest of the image file
+    DIGEST_FILE=$(mktemp)
+    openssl dgst --sha256 -binary -out "${DIGEST_FILE}" "${IMAGE}"
+
+    # Finally verify the signature.
+    if ! openssl pkeyutl -verify -in "${DIGEST_FILE}" -certin -inkey "${BOOT_PART_CERT}" -sigfile "${IMAGE_SIG}"; then
+        rm -f "${DIGEST_FILE}"
+        fail "Unable to verify signature of '${IMAGE}'"
+    fi
+
+    rm -f "${DIGEST_FILE}"
+}
+
+if [ -f /usr/libexec/pando-init-flasher-secureboot ]; then
+    . /usr/libexec/pando-init-flasher-secureboot
+fi
+if [ -f /usr/libexec/pando-init-flasher-diskenc ]; then
+    . /usr/libexec/pando-init-flasher-diskenc
+fi
+
+########
+# MAIN #
+########
+
+# Only root
+if [ "$EUID" -ne 0 ]; then
+    fail "Please run as root."
+fi
+
+info "Board specific initialization..."
+/usr/bin/pando-init-board
+
+# Configuration file
+if [ -f $FLASHER_CONF_FILE ]; then
+    source $FLASHER_CONF_FILE
+else
+    fail "No configuration for pando-init-flasher."
+fi
+info "pando-init-flasher configuration found."
+
+# Find path to image
+#
+# Check /tmp separately from /, as when migrating, we have the image copied to
+# a separate filesystem, and -xdev prohibits crossing filesystem boundaries
+_pando_image=$(find /tmp -xdev -type f -name "${PANDO_IMAGE}")
+if [ ! -f "${_pando_image}" ]; then
+    _pando_image=$(find / -xdev -type f -name "${PANDO_IMAGE}")
+    if [ ! -f "${_pando_image}" ]; then
+        fail "Raw image ${PANDO_IMAGE}  not found in rootfs"
+    fi
+fi
+PANDO_IMAGE="${_pando_image}"
+EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT="/mnt/boot"
+
+# Pando configuration file
+if [ -f /usr/sbin/pando-config-vars ]; then
+    source /usr/sbin/pando-config-vars
+else
+    fail "No Pando configuration found."
+fi
+info "Pando configuration found."
+
+# PANDO_BOOT_MOUNTPOINT should exist
+if [ ! -d "$PANDO_BOOT_MOUNTPOINT" ]; then
+	fail "$PANDO_BOOT_MOUNTPOINT : No such directory."
+fi
+
+# CONFIG_PATH should exist
+if [ ! -f "$CONFIG_PATH" ]; then
+    fail "$CONFIG_PATH : No such file."
+fi
+
+if [ -z "${INTERNAL_DEVICE_KERNEL}" ]; then
+    report_progress 100 "Installer is not supported on this device type."
+    fail "Undefined target programming device - make sure INTERNAL_DEVICE_KERNEL is defined"
+fi
+
+if target_devices=$(jq -re '.installer.target_devices' "$CONFIG_PATH"); then
+    info "Using updated target devices list from configuration file: $target_devices"
+    INTERNAL_DEVICE_KERNEL="${target_devices}"
+fi
+
+# Flash Resin image on internal device
+info "Flash internal device... will take around 5 minutes... "
+internal_dev=$(get_internal_device "${INTERNAL_DEVICE_KERNEL}")
+if [ -z "$internal_dev" ]; then
+    report_progress 100 "Failed to find any block devices."
+    fail "Failed to find any block devices in $INTERNAL_DEVICE_KERNEL."
+fi
+info "$internal_dev will be used for flashing."
+
+IMAGE_FILE_SIZE=$(wc -c "$PANDO_IMAGE" | awk '{print $1}')
+
+if type secureboot_setup >/dev/null 2>&1 && secureboot_setup; then
+        info "Secure boot is enabled, proceeding with lockdown"
+        CRYPT=1
+        # shellcheck disable=SC1091
+        # Re-source after secureboot setup
+        . /usr/sbin/pando-config-defaults
+fi
+
+if [ "$CRYPT" = "1" ]; then
+    # If we are going for the encryption, first of all verify that the image
+    # we are about to flash is correctly signed.
+    if ! verify_image_signature "${PANDO_IMAGE}"; then
+        fail "Failed to verify signature of '${PANDO_IMAGE}'"
+    fi
+
+    if type diskenc_setup >/dev/null 2>&1 && ! diskenc_setup; then
+        fail "Failed to setup disk encryption"
+    fi
+
+    # Attach the image to a loop device
+    LOOP_DEVICE=$(losetup --find --show --partscan "$PANDO_IMAGE")
+    LOOP_DEVICE_NAME="${LOOP_DEVICE#/dev/}"
+
+    # Repartition the new drive
+    report_progress 0 "Starting flashing PandoOS on internal media"
+    info "Repartitioning $internal_dev for disk encryption"
+
+    # Align partition sizes to multiples of 4MB
+    PART_SIZE_ALIGN=$[4 * 1024 * 1024]
+
+    # Wipe the existing partition table and create a blank one
+    dd if=/dev/zero of="$internal_dev" bs=4M count=1
+    # Regardless of what the original image uses we always want GPT for secure boot + CRYPT
+    # Though in practice MBR would work as well in most cases, it is not globally guaranteed
+    # and it is much harder to operate on due to the necessity of an extended partition
+    parted "$internal_dev" mktable gpt
+
+    info "Flashing boot partition"
+    ORIGINAL_BOOT_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" pando-boot)
+    ORIGINAL_BOOT_PART_SIZE=$(get_part_size_by_number "$LOOP_DEVICE_NAME" "$ORIGINAL_BOOT_PART_ID" "$PART_SIZE_ALIGN")
+    ORIGINAL_BOOT_START=$(get_part_start_by_number "$LOOP_DEVICE_NAME" "$ORIGINAL_BOOT_PART_ID")
+
+    parted "$internal_dev" \
+	    unit B \
+	    mkpart "${PANDO_NONENC_BOOT_LABEL}" \
+	    "$ORIGINAL_BOOT_START" \
+	    $["$ORIGINAL_BOOT_START" + "$ORIGINAL_BOOT_PART_SIZE" - 1]
+
+    NONENC_BOOT_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" pando-boot)
+
+    PART_PREFIX=""
+    if [ -e "${internal_dev}p${NONENC_BOOT_PART_ID}" ]; then
+        PART_PREFIX="p"
+    fi
+
+    dd if="${LOOP_DEVICE}p${ORIGINAL_BOOT_PART_ID}" of="${internal_dev}${PART_PREFIX}${NONENC_BOOT_PART_ID}" bs=4M
+    FLASHED="$ORIGINAL_BOOT_PART_SIZE"
+
+    # Relabel former boot partition
+    fatlabel "${internal_dev}${PART_PREFIX}${NONENC_BOOT_PART_ID}" "${PANDO_NONENC_BOOT_LABEL}"
+
+    # And set as bootable
+    parted "$internal_dev" set "${NONENC_BOOT_PART_ID}" boot on
+
+    # Find parition IDs
+    ROOTA_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" pando-rootA)
+    ROOTB_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" pando-rootB)
+    STATE_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" pando-state)
+    DATA_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" pando-data)
+
+    # Find partition sizes
+    BOOT_PART_SIZE=$(get_part_size_by_number "$LOOP_DEVICE_NAME" "$NONENC_BOOT_PART_ID" "$PART_SIZE_ALIGN")
+    ROOTA_PART_SIZE=$(get_part_size_by_number "$LOOP_DEVICE_NAME" "$ROOTA_PART_ID" "$PART_SIZE_ALIGN")
+    ROOTB_PART_SIZE=$(get_part_size_by_number "$LOOP_DEVICE_NAME" "$ROOTB_PART_ID" "$PART_SIZE_ALIGN")
+    STATE_PART_SIZE=$(get_part_size_by_number "$LOOP_DEVICE_NAME" "$STATE_PART_ID" "$PART_SIZE_ALIGN")
+    DATA_PART_SIZE=$(get_part_size_by_number "$LOOP_DEVICE_NAME" "$DATA_PART_ID" "$PART_SIZE_ALIGN")
+
+    # Find the beginning of the first partition
+    FIRST_PART_ID=$(echo -e "$ROOTA_PART_ID\n$ROOTB_PART_ID\n$STATE_PART_ID\n$DATA_PART_ID" | sort | head -n 1)
+    FIRST_PART_START=$(get_part_start_by_number "$LOOP_DEVICE_NAME" "$FIRST_PART_ID")
+
+    LUKS_HEADER_SIZE=0
+    if [ "${USE_LUKS}" == "1" ]; then
+        # CRYPT2 header size is 16MiB
+        LUKS_HEADER_SIZE=$((16 * 1024 * 1024))
+    fi
+
+    BOOT_PART_END=$["$FIRST_PART_START" + "$BOOT_PART_SIZE" + "$LUKS_HEADER_SIZE" - 1]
+    parted -s "$internal_dev" -- unit B mkpart pando-boot "$FIRST_PART_START" "$BOOT_PART_END"
+
+    ROOTA_PART_END=$["$BOOT_PART_END" + "$ROOTA_PART_SIZE" + "$LUKS_HEADER_SIZE"]
+    parted -s "$internal_dev" -- unit B mkpart pando-rootA "$[$BOOT_PART_END + 1]" "$ROOTA_PART_END"
+
+    ROOTB_PART_END=$["$ROOTA_PART_END" + "$ROOTB_PART_SIZE" + "$LUKS_HEADER_SIZE"]
+    parted -s "$internal_dev" -- unit B mkpart pando-rootB "$[$ROOTA_PART_END + 1]" "$ROOTB_PART_END"
+
+    STATE_PART_END=$["$ROOTB_PART_END" + "$STATE_PART_SIZE" + "$LUKS_HEADER_SIZE"]
+    parted -s "$internal_dev" -- unit B mkpart pando-state "$[$ROOTB_PART_END + 1]" "$STATE_PART_END"
+
+    DATA_PART_END=$["$STATE_PART_END" + "$DATA_PART_SIZE" + "$LUKS_HEADER_SIZE"]
+    parted -s "$internal_dev" -- unit B mkpart pando-data "$[$STATE_PART_END + 1]" "$DATA_PART_END"
+
+    for PART_NAME in pando-boot pando-rootA pando-rootB pando-state pando-data; do
+        LOOP_PART_ID=$(get_part_number_by_label "$LOOP_DEVICE_NAME" "$PART_NAME")
+        INTERNAL_PART_ID=$(get_part_number_by_label "${internal_dev#/dev/}" "$PART_NAME" partlabel)
+
+        PART_DEV="$internal_dev$PART_PREFIX$INTERNAL_PART_ID"
+        info "Encrypting $PART_DEV"
+        if [ "${USE_LUKS}" == "1" ]; then
+            cryptsetup -q luksFormat --type luks2 "$PART_DEV" "$PASSPHRASE_FILE"
+            cryptsetup luksOpen "$PART_DEV" "$PART_NAME" --key-file "$PASSPHRASE_FILE"
+        else
+            if command -v diskenc_dmsetup > /dev/null; then
+                diskenc_dmsetup "${PART_DEV}" "${PART_NAME}"
+            else
+                fail "Non-LUKS partition encryption command not available"
+            fi
+        fi
+        DM_DEV="/dev/mapper/$PART_NAME"
+        if ! wait4file "$DM_DEV" "300"; then
+            fail "Timed out waiting for $DM_DEV"
+        fi
+        if [ "$PART_NAME" = "pando-boot" ]; then
+            # Just create the FS, we will split boot below
+            mkfs.ext4 -L "pando-boot" "$DM_DEV"
+            continue
+        fi
+
+        info "Flashing $PART_DEV"
+
+        dd_with_progress "${LOOP_DEVICE}p$LOOP_PART_ID" "$DM_DEV" "$FLASHED" "$IMAGE_FILE_SIZE"
+
+        [ "$PART_NAME" = "pando-boot" ] && FLASHED=$["$FLASHED" + "$BOOT_PART_SIZE"]
+        [ "$PART_NAME" = "pando-rootA" ] && FLASHED=$["$FLASHED" + "$ROOTA_PART_SIZE"]
+        [ "$PART_NAME" = "pando-rootB" ] && FLASHED=$["$FLASHED" + "$ROOTB_PART_SIZE"]
+        [ "$PART_NAME" = "pando-state" ] && FLASHED=$["$FLASHED" + "$STATE_PART_SIZE"]
+        [ "$PART_NAME" = "pando-data" ] && FLASHED=$["$FLASHED" + "$DATA_PART_SIZE"]
+
+        sync "$DM_DEV"
+    done
+
+    rm -f "$PASSPHRASE_FILE"
+    losetup -d "$LOOP_DEVICE"
+else
+    report_progress 0 "Starting flashing pandoOS on internal media"
+    dd_with_progress "$PANDO_IMAGE" "$internal_dev" 0 "$IMAGE_FILE_SIZE"
+fi
+
+sync
+
+# Trigger udev
+partprobe "$internal_dev"
+udevadm trigger
+udevadm settle
+
+# Flash bootloader(s)
+if [ -n "$BOOTLOADER_FLASH_DEVICE" ]; then
+    if [ -n "$BOOTLOADER_IMAGE" ] && [ -n "$BOOTLOADER_BLOCK_SIZE_OFFSET" ]; then
+        dd if="${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${BOOTLOADER_IMAGE}" of="/dev/${BOOTLOADER_FLASH_DEVICE}" bs="${BOOTLOADER_BLOCK_SIZE_OFFSET}" seek="${BOOTLOADER_SKIP_OUTPUT_BLOCKS}"
+        info "Flashed ${BOOTLOADER_IMAGE} to internal flash"
+    else
+        fail "BOOTLOADER_IMAGE and/or BOOTLOADER_BLOCK_SIZE_OFFSET are not set."
+    fi
+else
+    info "No need to flash first stage bootloader to a specific device."
+fi
+
+if [ -n "$BOOTLOADER_FLASH_DEVICE_1" ]; then
+    if [ -n "$BOOTLOADER_IMAGE_1" ] && [ -n "$BOOTLOADER_BLOCK_SIZE_OFFSET_1" ]; then
+        dd if="${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${BOOTLOADER_IMAGE_1}" of="/dev/${BOOTLOADER_FLASH_DEVICE_1}" bs="${BOOTLOADER_BLOCK_SIZE_OFFSET_1}" seek="${BOOTLOADER_SKIP_OUTPUT_BLOCKS_1}"
+        info "Flashed ${BOOTLOADER_IMAGE_1} to internal flash"
+    else
+        fail "BOOTLOADER_IMAGE_1 and/or BOOTLOADER_BLOCK_SIZE_OFFSET_1 are not set."
+    fi
+else
+    info "No need to flash second stage bootloader to a specific device."
+fi
+
+# Mount internal device boot partition
+mkdir -p $INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT
+info "Mounting internal device boot partition."
+
+# Wait for the devices to be detected for a while
+timeout 10 bash -c 'until test -L /dev/disk/by-label/pando-boot; do sleep 1; done'
+BOOT_MOUNT=$(get_dev_path_in_device_with_label "${internal_dev}" pando-boot)
+if [ -n "${BOOT_MOUNT}" ]; then
+    if ! mount "${BOOT_MOUNT}"  "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}"; then
+        fail "Failed to mount disk labeled as 'pando-boot'."
+    fi
+else
+    fail "Internal boot partition (pando-boot) not found in ${internal_dev}"
+fi
+
+if [ "$CRYPT" = "1" ]; then
+    if type bootpart_split >/dev/null 2>&1 && ! bootpart_split; then
+        fail "Failed to split boot partition."
+    fi
+fi
+
+# Copy custom splash dir
+if [ -d "${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${PANDO_SPLASH_CONFIG}" ]; then
+    mkdir -p "$INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$PANDO_SPLASH_CONFIG"
+    cp -r $EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$PANDO_SPLASH_CONFIG/* $INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$PANDO_SPLASH_CONFIG
+fi
+# Copy Network Manager connection files
+_nm_config="${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${PANDO_NM_CONFIG}"
+if [ -d "${_nm_config}" ]; then
+    info "Transferring system connections on the internal device."
+    rm -rf "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${PANDO_NM_CONFIG}/"
+    cp -rvf "${_nm_config}" "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}"
+else
+    info "No system connections found to transfer on the internal device."
+fi
+# Copy Network Manager dispatcher scripts
+_nm_dispatcher="${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${PANDO_NM_DISPATCHER}"
+if [ -d "${_nm_dispatcher}" ]; then
+    info "Transferring dispatcher scripts on the internal device."
+    rm -rf "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${PANDO_NM_DISPATCHER}/"
+    cp -rvf "${_nm_dispatcher}" "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}"
+else
+    info "No dispatcher scripts found to transfer on the internal device."
+fi
+# Copy proxy configuration files
+_proxy_config="${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${PANDO_PROXY_CONFIG}"
+if [ -d "${_proxy_config}" ]; then
+    info "Transferring proxy configuration on the internal device."
+    rm -rf "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${PANDO_PROXY_CONFIG}"
+    cp -rvf "${_proxy_config}" "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}"
+else
+    info "No proxy configuration found to transfer on the internal device."
+fi
+# Copy bootloader config file
+if [ -n "${INTERNAL_DEVICE_BOOTLOADER_CONFIG}" ] && [ -f "${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${INTERNAL_DEVICE_BOOTLOADER_CONFIG}" ]; then
+        if [[ -z "${INTERNAL_DEVICE_BOOTLOADER_CONFIG_PATH}" ]]; then
+            fail "INTERNAL_DEVICE_BOOTLOADER_CONFIG needs INTERNAL_DEVICE_BOOTLOADER_CONFIG_PATH to be set."
+        fi
+
+        cp "$EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG" "$INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG_PATH"
+        if [ -f "$EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG.sig" ]; then
+            cp "$EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG.sig" "$INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG_PATH.sig"
+        fi
+
+        if [ -n "${INTERNAL_DEVICE_BOOTLOADER_LEGACY_CONFIG_PATH}" ]; then
+            cp "$EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_CONFIG" "$INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$INTERNAL_DEVICE_BOOTLOADER_LEGACY_CONFIG_PATH"
+        fi
+fi
+
+# Copy resinOS bootloader config file
+if [ -f "${EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/${PANDO_BOOTLOADER_CONFIG}" ]; then
+        cp $EXTERNAL_DEVICE_BOOT_PART_MOUNTPOINT/$PANDO_BOOTLOADER_CONFIG $INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT
+fi
+
+if type secureboot_bootloader_setup >/dev/null 2>&1 && ! secureboot_bootloader_setup; then
+    fail "Failed to run secureboot post installation steps."
+fi
+
+# Copy json configuration file from external (flasher) to the internal
+# (booting) device, sans installer section
+jq 'del(.installer)' "${CONFIG_PATH}" \
+    > "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/$(basename "${CONFIG_PATH}")"
+
+if [ "$CRYPT" = "1" ]; then
+    umount "${NONENC_BOOT_MOUNT_DIR}"
+fi
+
+info "Board specific flash procedure..."
+/usr/bin/pando-init-flasher-board
+
+info "Log end"
+# Preserve logs when running from initramfs
+if [ -n "${INITRAMFS_LOGFILE}" ] && [ -f "${INITRAMFS_LOGFILE}" ]; then
+    cp -fv "${INITRAMFS_LOGFILE}" "${INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT}/migration_$(date +"%Y%m%dT%H%M")"
+fi
+
+umount $INTERNAL_DEVICE_BOOT_PART_MOUNTPOINT
+
+sync
+
+if type secureboot_bootloader_postsetup >/dev/null 2>&1 && ! secureboot_bootloader_postsetup; then
+    fail "Failed to run secureboot post installation steps."
+fi
+
+if [ "$CRYPT" = "1" ]; then
+    for PART_NAME in pando-boot pando-rootA pando-rootB pando-state pando-data; do
+        if [ "${USE_LUKS}" == "1" ]; then
+            cryptsetup luksClose "$PART_NAME"
+        else
+            dmsetup remove --retry "${PART_NAME}"
+        fi
+    done
+fi
+
+# If in initramfs recovery mode, wait for adbd to finish
+if [ -n "${ADBD_PID}" ]; then
+    # adbd is not a child process so cannot wait
+    while kill -0  "${ADBD_PID}" 2>/dev/null; do sleep 1; done
+fi
+
+report_progress 100 "Post-Provisioning"
+
+_a='o'
+if [ "${POSTINSTALL_REBOOT}" = "1" ]; then
+    info "Rebooting..."
+    _a='b'
+    if command -v os_helpers_reboot > /dev/null; then
+        os_helpers_reboot
+    elif command -v reboot > /dev/null; then
+        if ! reboot; then
+            reboot -f
+        fi
+    fi
+fi
+
+info "Shutting down ..."
+if command -v os_helpers_shutdown > /dev/null; then
+    os_helpers_shutdown
+else
+	if command -v shutdown > /dev/null; then
+		shutdown -h now
+	elif command -v poweroff > /dev/null; then
+		if ! poweroff; then
+		    poweroff -f
+		fi
+	elif command -v halt > /dev/null; then
+		if ! halt; then
+		    halt -f
+		fi
+	elif command -v reboot > /dev/null; then
+		if ! reboot -p; then
+		    reboot -p -f
+		fi
+	fi
+fi
+
+echo "${_a}" > /proc/sysrq-trigger
+fail "Unable to shutdown or reboot"

@@ -1,0 +1,16 @@
+[Unit]
+Description=Pando On-Device Agent
+Requires=pando\x2ddata.mount pando-device-uuid.service
+After=balena.service pando\x2ddata.mount pando-device-uuid.service
+Wants=balena.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10s
+ExecStartPre=/bin/systemctl is-active balena.service
+ExecStart=/usr/bin/pando-agent-start
+ExecStop=/usr/bin/balena stop pando-agent
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+#!/bin/sh
+
+# shellcheck disable=SC1091
+. /usr/libexec/os-helpers-logging
+. /usr/libexec/os-helpers-fs
+
+
+cryptsetup_enabled() {
+    # Flasher should not try to unlock the partitions
+    if [ "$bootparam_flasher" = "true" ]; then
+        return 1
+    fi
+
+    # To be implemented
+    return 1
+}
+
+cryptsetup_run() {
+    return 1
+}

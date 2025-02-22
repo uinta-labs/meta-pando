@@ -1,0 +1,12 @@
+[Unit]
+Description=Hostapp extensions updater
+Requires=pando-data.service pando-data-reset.service balena.service
+After=pando-data.service pando-data-reset.service balena.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@BASE_BINDIR@/bash @BINDIR@/update-hostapp-extensions
+
+[Install]
+WantedBy=multi-user.target

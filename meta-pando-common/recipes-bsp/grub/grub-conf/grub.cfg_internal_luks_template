@@ -1,0 +1,46 @@
+# Automatically created by OE
+serial --unit=0 --speed=115200 --word=8 --parity=no --stop=1
+default=boot
+insmod ext2
+insmod gzio
+insmod test
+insmod loadenv
+insmod regexp
+insmod probe
+insmod configfile
+timeout=@@TIMEOUT@@
+
+load_env --skip-sig bootcount pando_root_part upgrade_available
+
+if [ ${upgrade_available} = 1 ] ; then
+ if [ ${bootcount} = 1 ] ; then
+  set bootcount=2
+  save_env bootcount
+ fi
+ if [ ${bootcount} = 0 ] ; then
+  set bootcount=1
+  save_env bootcount
+ fi
+fi
+
+menuentry 'boot'{
+set pando_root=pando-rootA
+if [ ${bootcount} = 2 ] ; then
+ if [ ${pando_root_part} = 3 ] ; then
+  set pando_root=pando-rootB
+ fi
+else
+ if [ ${pando_root_part} = 4 ] ; then
+  set pando_root=pando-rootB
+ fi
+fi
+linux /@@KERNEL_IMAGETYPE@@ pando_stage2 root=LABEL=${pando_root} @@KERNEL_CMDLINE@@ ${extra_os_cmdline}
+}
+
+menuentry 'manualfallbackA' {
+  linux /@@KERNEL_IMAGETYPE@@ pando_stage2 root=LABEL=pando-rootA @@KERNEL_CMDLINE@@ ${extra_os_cmdline}
+}
+
+menuentry 'manualfallbackB' {
+  linux /@@KERNEL_IMAGETYPE@@ pando_stage2 root=LABEL=pando-rootB @@KERNEL_CMDLINE@@ ${extra_os_cmdline}
+}

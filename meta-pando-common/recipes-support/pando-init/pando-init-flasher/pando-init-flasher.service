@@ -1,0 +1,13 @@
+[Unit]
+Description=Pando init flasher service
+Requires=mnt-boot.mount
+Wants=pando-device-register.service
+After=mnt-boot.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@BASE_BINDIR@/bash @BINDIR@/pando-init-flasher
+
+[Install]
+WantedBy=multi-user.target

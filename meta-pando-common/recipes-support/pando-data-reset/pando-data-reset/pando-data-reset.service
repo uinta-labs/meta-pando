@@ -1,0 +1,17 @@
+[Unit]
+Description=Reset Pando OS Data
+DefaultDependencies=no
+Requires=pando-data.service var-volatile.mount
+After=pando-data.service var-volatile.mount
+Before=umount.target
+Conflicts=umount.target
+ConditionPathExists=!@PANDO_DATA_MP@/remove_me_to_reset
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@BASE_BINDIR@/sh @BINDIR@/pando-data-reset
+ExecStartPost=@BASE_BINDIR@/touch @PANDO_DATA_MP@/remove_me_to_reset
+
+[Install]
+WantedBy=multi-user.target

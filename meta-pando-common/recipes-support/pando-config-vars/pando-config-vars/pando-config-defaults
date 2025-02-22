@@ -1,0 +1,29 @@
+#!/bin/sh
+
+# shellcheck disable=SC1091
+[ -f "/usr/libexec/os-helpers-sb" ] && . /usr/libexec/os-helpers-sb
+
+# Default values
+PANDO_BOOT_MOUNTPOINT="@@PANDO_BOOT_MOUNT@@"
+PANDO_BOOT_LABEL="@@PANDO_BOOT_LABEL@@"
+PANDO_NONENC_BOOT_MOUNTPOINT="${PANDO_BOOT_MOUNTPOINT}"
+PANDO_NONENC_BOOT_LABEL="${PANDO_BOOT_LABEL}"
+if type is_secured >/dev/null 2>&1; then
+    # LUKS only defined if sourced from flasher script
+    if is_secured || [ "${CRYPT}" = "1" ]; then
+        PANDO_NONENC_BOOT_MOUNTPOINT="@@PANDO_NONENC_BOOT_MOUNT@@"
+        PANDO_NONENC_BOOT_LABEL="@@PANDO_NONENC_BOOT_LABEL@@"
+    fi
+fi
+# Do not use - left here for backwards compatibility - use PANDO_BOOT_MOUNTPOINT instead
+BOOT_MOUNTPOINT="${PANDO_BOOT_MOUNTPOINT}"
+FLASHER_FILEFLAG="$PANDO_BOOT_MOUNTPOINT/pando-image-flasher"
+if [ -z "$CONFIG_PATH" ]; then
+    if [ -f "$FLASHER_FILEFLAG" ]; then
+        # Flasher stores a volatile file in tmpfs
+        CONFIG_PATH=/mnt/boottmp/config.json
+    else
+        CONFIG_PATH=$PANDO_BOOT_MOUNTPOINT/config.json
+        PANDO_CONFIG_VARS_CACHE="/var/cache/pando-config-vars"
+    fi
+fi
