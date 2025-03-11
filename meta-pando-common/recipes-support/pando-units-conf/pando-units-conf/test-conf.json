@@ -1,7 +1,7 @@
 {
 	"$id": "http://www.balena.io/os/schemas/configuration.json",
 	"title": "BalenaOS configuration",
-	"description": "Schema for balenaOS config.json validation",
+	"description": "Schema for Pando OS config.json validation",
 	"type": "object",
 	"properties": {
 		"units": {

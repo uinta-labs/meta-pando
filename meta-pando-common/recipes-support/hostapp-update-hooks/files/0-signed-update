@@ -65,7 +65,7 @@ updateKeys() {
                          status=none \
                          bs=1 \
                          skip=4 | xxd -p -c ${SIGNATURE_LENGTH} ; \
-                      dd if=/pando-boot/balena-keys/db.esl \
+                      dd if=/pando-boot/pando-keys/db.esl \
                          status=none | xxd -p -c ${SIGNATURE_LENGTH} ; \
                     } | awk '!seen[$0]++' )"
                 current_digest="$(tpm2_pcrread --quiet "sha256:$pcr" -o /proc/self/fd/1 | _hexencode)"
@@ -193,9 +193,9 @@ updateKeys() {
             hw_encrypt_passphrase "$PASSPHRASE_FILE" "$POLICY" "$RESULT_DIR"
             rm -rf "${CURRENT_POLICY_PATH}"
 
-            tpm2_evictcontrol -c "${EFI_MOUNT_DIR}/balena-luks.ctx"
-            mv "${RESULT_DIR}/persistent.ctx" "${EFI_MOUNT_DIR}/balena-luks.ctx"
-            mv "${RESULT_DIR}/passphrase.enc" "${EFI_MOUNT_DIR}/balena-luks.enc"
+            tpm2_evictcontrol -c "${EFI_MOUNT_DIR}/pando-luks.ctx"
+            mv "${RESULT_DIR}/persistent.ctx" "${EFI_MOUNT_DIR}/pando-luks.ctx"
+            mv "${RESULT_DIR}/passphrase.enc" "${EFI_MOUNT_DIR}/pando-luks.enc"
         } >/dev/null
 
     elif [ "${UNLOCK_PCRS_SUCCESS}" = "0,1,2,3" ]; then
@@ -216,7 +216,7 @@ updateKeys() {
     # PK and KEK need to be implemented
     DB_SYSFS_FILE="db-d719b2cb-3d3a-4596-a3bc-dad00e67656f"
     chattr -i "${EFIVARS_MOUNTDIR}/${DB_SYSFS_FILE}"
-    efi-updatevar -a -f "/pando-boot/balena-keys/db.auth" db
+    efi-updatevar -a -f "/pando-boot/pando-keys/db.auth" db
     chattr +i "${EFIVARS_MOUNTDIR}/${DB_SYSFS_FILE}"
 
     # dbx is updated by rollback-health when it confirms that HUP went through

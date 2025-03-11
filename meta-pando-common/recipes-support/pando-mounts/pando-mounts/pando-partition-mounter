@@ -15,7 +15,7 @@
 # limitations under the License.
 
 #
-# Tool for mounting a balenaOS partition
+# Tool for mounting a Pando OS partition
 #
 
 set -e
@@ -27,7 +27,7 @@ TIMEOUT_LOOPS=300 # ~ 100ms/loop * 300loops = 30000ms = 30s
 #
 help () {
     cat << EOF
-Tool for mounting a balenaOS partition
+Tool for mounting a Pando OS partition
 $0 <ARGUMENTS>
 
 ARGUMENTS:

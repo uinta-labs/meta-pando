@@ -24,7 +24,7 @@
 					"description": "Display banner on graphical terminal",
 					"configuration": "developmentMode"
 				},
-				"balena-net-config": {
+				"pando-net-config": {
 					"description": "Network configuration",
 					"configuration": "country dnsServers"
 				},

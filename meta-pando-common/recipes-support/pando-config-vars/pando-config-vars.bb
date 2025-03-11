@@ -24,7 +24,8 @@ SYSTEMD_UNIT_NAMES = "os-sshkeys os-udevrules os-networkmanager"
 inherit pando-configurable
 
 DEPENDS = "bash-native jq-native coreutils-native"
-RDEPENDS:${PN} = "bash udev coreutils fatrw"
+### RDEPENDS:${PN} = "bash udev coreutils fatrw"
+RDEPENDS:${PN} = "bash udev coreutils"
 PACKAGES =+ "${PN}-config"
 RDEPENDS:${PN}-config = "jq"
 RDEPENDS:${PN}-config:append = "${@oe.utils.conditional('SIGN_API','','',' os-helpers-sb',d)}"

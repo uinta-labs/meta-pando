@@ -97,24 +97,7 @@ deploy() {
 	fi
 	info "Deploying ${boot_mountpoint}${_file}"
 	if isBlacklisted "$_file"; then
-		if [ "$_file" = "/splash/balena-logo.png" ]; then
-			if [ -f "$boot_mountpoint/splash/resin-logo.png" ]; then
-				if isModified "/splash/resin-logo.png"; then
-					# Keep custom logo
-					info "renaming resin-logo to balena-logo..."
-					sync -f "$boot_mountpoint"
-					"${MV}" "$boot_mountpoint/splash/resin-logo.png" "$boot_mountpoint/splash/balena-logo.png"
-					sync -f "$boot_mountpoint"
-				else
-					# This rebrands from old resin logo
-					info "replacing resin-logo with balena-logo..."
-					copyBootFile "$_file"
-					rm "$boot_mountpoint/splash/resin-logo.png"
-				fi
-				info "Deployed ${boot_mountpoint}${_file}.\n"
-				return
-			fi
-		elif [ "$_file" = "/config.json" ]; then
+		if [ "$_file" = "/config.json" ]; then
 			development_mode="$("${CAT}" "${boot_mountpoint}$_file" | jq -r ".developmentMode")"
 			if [ -z "${development_mode}" ] || [ "${development_mode}" = "null" ]; then
 				# Only configure developmentMode if updating from a legacy development image

@@ -206,8 +206,8 @@ hw_decrypt_passphrase() {
     AUTH="$2"
     OUTPUT_FILE="$3"
 
-    tpm2_rsadecrypt -c "${EFI_DIR}/balena-luks.ctx" \
+    tpm2_rsadecrypt -c "${EFI_DIR}/pando-luks.ctx" \
                     -p "${AUTH}" \
                     -o "${OUTPUT_FILE}" \
-                    "${EFI_DIR}/balena-luks.enc"
+                    "${EFI_DIR}/pando-luks.enc"
 }

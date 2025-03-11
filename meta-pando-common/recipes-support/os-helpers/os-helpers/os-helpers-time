@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-# The timestamp format used by balenaOS is YYYYMMDDhhmmss.
+# The timestamp format used by Pando OS is YYYYMMDDhhmmss.
 
 
 # Get the system time as a timestamp.

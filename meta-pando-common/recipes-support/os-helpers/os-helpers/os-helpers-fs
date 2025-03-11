@@ -457,7 +457,7 @@ split_bootpartition() {
     done
 
     # Store files necessary for TPM decryption to the unencrypted partitions
-    mv "${ENC_PASSPHRASE_FILE}" "$NONENC_BOOT_MOUNT_DIR/balena-luks.enc" && sync
+    mv "${ENC_PASSPHRASE_FILE}" "$NONENC_BOOT_MOUNT_DIR/pando-luks.enc" && sync
 
     rm -rf "$TPM_RESULT_DIR"
 
