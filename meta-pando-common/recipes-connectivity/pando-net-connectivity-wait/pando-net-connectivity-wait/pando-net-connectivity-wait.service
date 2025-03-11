@@ -16,12 +16,12 @@
 Description=Wait for full network connectivity
 Requires=dbus.service
 After=dbus.service
-Before=balena-net-connectivity-wait.target
+Before=pando-net-connectivity-wait.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=@BINDIR@/balena-net-connectivity-wait
+ExecStart=@BINDIR@/pando-net-connectivity-wait
 
 [Install]
-WantedBy=balena-net-connectivity-wait.target
+WantedBy=pando-net-connectivity-wait.target

@@ -1,6 +1,6 @@
 inherit deploy meson
 
-FILESEXTRAPATHS:append := ":${THISDIR}/balena-files:${THISDIR}/${BPN}"
+FILESEXTRAPATHS:append := ":${THISDIR}/pando-files:${THISDIR}/${BPN}"
 
 SRC_URI:append = " \
     file://NetworkManager.conf.systemd \
@@ -22,7 +22,7 @@ RDEPENDS:${PN}:append = " \
     bash \
     chrony \
     chronyc \
-    balena-net-config \
+    pando-net-config \
     resolvconf \
     os-helpers-logging \
     "

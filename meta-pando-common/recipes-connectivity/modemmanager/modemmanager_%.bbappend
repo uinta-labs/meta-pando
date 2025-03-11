@@ -1,4 +1,4 @@
-FILESEXTRAPATHS:append := ":${THISDIR}/balena-files"
+FILESEXTRAPATHS:append := ":${THISDIR}/pando-files"
 SYSTEMD_AUTO_ENABLE = "enable"
 
 SRC_URI:append = " \

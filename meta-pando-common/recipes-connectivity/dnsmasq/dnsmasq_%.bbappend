@@ -1,4 +1,4 @@
-FILESEXTRAPATHS:prepend := "${THISDIR}/balena-files:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/pando-files:"
 
 SRC_URI += " \
 	file://dnsmasq.conf.systemd \
