@@ -27,7 +27,7 @@
  *
  */
 
-#include <config_pando.h>
+#include <config_resin.h>
 
 #define PANDO_ENV \
        "pando_env_file=" __stringify(PANDO_ENV_FILE) "\0" \
@@ -137,10 +137,10 @@
                        "setenv pando_dev_index ${pando_flasher_dev_index}; "\
                "else; "\
                        "if test -n \"${pando_image_dev_index}\"; then " \
-                               "echo Found resin image on ${pando_dev_type} ${pando_image_dev_index}; "\
+                               "echo Found pando image on ${pando_dev_type} ${pando_image_dev_index}; "\
                                "setenv pando_dev_index ${pando_image_dev_index}; "\
                        "else; " \
-                               "echo ERROR: Could not find a resin image of any sort.; " \
+                               "echo ERROR: Could not find a pando image of any sort.; " \
                        "fi; " \
                "fi;\0" \
        \

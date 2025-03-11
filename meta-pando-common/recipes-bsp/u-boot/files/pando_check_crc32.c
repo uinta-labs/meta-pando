@@ -102,7 +102,7 @@ static int do_pando_crc32(cmd_tbl_t *cmdtp, int flag, int argc,
  */
 U_BOOT_CMD(
 	pando_crc32,	CONFIG_SYS_MAXARGS,	1,	do_pando_crc32,
-	"balenaOS crc32 verification commands",
+	"Pando OS crc32 verification commands",
 	"save <fdtaddr/loadaddr>\n"
 	"    - save crc32 for fdtaddr or loadaddr in <fdtaddr/loadaddr>_crc32\n"
 	"check <fdtaddr/kerneladdr>\n"

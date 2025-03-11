@@ -28,13 +28,13 @@ do_deploy:append:class-target() {
     # expect the modules directory to exist in ${DEPLOYDIR}, so create it.
     install -d ${DEPLOYDIR}/grub/${GRUB_TARGET}-efi/
 
-    if [ -f "${DEPLOY_DIR_IMAGE}/balena-keys/grub.gpg" ]; then
+    if [ -f "${DEPLOY_DIR_IMAGE}/pando-keys/grub.gpg" ]; then
         install -m 644 ${B}/${GRUB_IMAGE_PREFIX}${GRUB_IMAGE}.secureboot ${DEPLOYDIR}
     fi
 }
 
 do_mkimage:append() {
-    PUBKEY_FILE="${DEPLOY_DIR_IMAGE}/balena-keys/grub.gpg"
+    PUBKEY_FILE="${DEPLOY_DIR_IMAGE}/pando-keys/grub.gpg"
     if [ -f "${PUBKEY_FILE}" ]; then
         grub-mkimage -c ../cfg -p ${EFIDIR} -d ./grub-core/ \
                -O ${GRUB_TARGET}-efi -o ./${GRUB_IMAGE_PREFIX}${GRUB_IMAGE}.secureboot \
@@ -42,4 +42,4 @@ do_mkimage:append() {
     fi
 }
 
-do_mkimage[depends] += "${@oe.utils.conditional('SIGN_API','','',' balena-keys:do_deploy',d)}"
+do_mkimage[depends] += "${@oe.utils.conditional('SIGN_API','','',' pando-keys:do_deploy',d)}"
