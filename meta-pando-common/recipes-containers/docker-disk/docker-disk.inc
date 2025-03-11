@@ -38,9 +38,15 @@ HOSTAPP_PLATFORM:armv5 = "linux/arm/v5"
 HOSTAPP_PLATFORM:armv6 = "linux/arm/v5"
 HOSTAPP_PLATFORM:armv7a = "linux/arm/v7"
 HOSTAPP_PLATFORM:armv7ve = "linux/arm/v7"
-HOSTAPP_PLATFORM:aarch64 = "linux/arm64"
+HOSTAPP_PLATFORM:789-aarch64 = "linux/arm64"
 HOSTAPP_PLATFORM:x86 = "linux/i386"
 HOSTAPP_PLATFORM:x86-64 = "linux/amd64"
 HOSTAPP_PLATFORM:intel-quark = "linux/i386"
+
+### HOSTAPP_PLATFORM = "${@d.getVar('TARGET_ARCH') == 'aarch64' and 'linux/arm64' or \
+###                        d.getVar('TARGET_ARCH') == 'arm' and \
+###                        ('armv7' in d.getVar('TUNE_FEATURES') and 'linux/arm/v7' or 'linux/arm/v5') or \
+###                        d.getVar('TARGET_ARCH') == 'x86_64' and 'linux/amd64' or \
+###                        d.getVar('TARGET_ARCH') == 'x86' and 'linux/i386' or ''}"
 
 HOSTEXT_IMAGES ?= ""

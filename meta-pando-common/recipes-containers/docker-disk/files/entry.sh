@@ -45,10 +45,10 @@ done
 echo "Docker started."
 
 # # Pull in host extension images
-# BALENA_HOSTAPP_EXTENSIONS_FEATURE="io.balena.features.host-extension"
+# PANDO_HOSTAPP_EXTENSIONS_FEATURE="io.balena.features.host-extension"
 # for image_name in ${HOSTEXT_IMAGES}; do
 # 	if docker pull --platform "${HOSTAPP_PLATFORM}" "${image_name}"; then
-# 		docker create --label "${BALENA_HOSTAPP_EXTENSIONS_FEATURE}" "${image_name}" none
+# 		docker create --label "${PANDO_HOSTAPP_EXTENSIONS_FEATURE}" "${image_name}" none
 # 	else
 # 		echo "Not able to pull ${image_name} for ${HOSTAPP_PLATFORM}"
 # 		exit 1
@@ -57,25 +57,23 @@ echo "Docker started."
 
 # # Pull in the supervisor image as a separate app until it converges in the hostOS
 # if [ -n "${SUPERVISOR_FLEET}" ] && [ -n "${SUPERVISOR_VERSION}" ]; then
-# 	_supervisor_image=$(balena_api_fetch_image_from_app "${SUPERVISOR_FLEET}" "${SUPERVISOR_VERSION#v}" "${BALENA_API_ENV}" "${BALENA_API_TOKEN}")
+# 	_supervisor_image=$(pando_api_fetch_image_from_app "${SUPERVISOR_FLEET}" "${SUPERVISOR_VERSION#v}" "${BALENA_API_ENV}" "${BALENA_API_TOKEN}")
 # 	echo "Pulling ${SUPERVISOR_FLEET}:${SUPERVISOR_VERSION}"
 # 	if docker pull "${_supervisor_image}"; then
 # 		docker tag "${_supervisor_image}" "${_supervisor_image%@*}"
-# 		docker tag "${_supervisor_image}" "balena_supervisor":"${SUPERVISOR_VERSION}"
+# 		docker tag "${_supervisor_image}" "pando_supervisor":"${SUPERVISOR_VERSION}"
 # 	else
 # 		echo "Not able to pull ${_supervisor_image}"
 # 		exit 1
 # 	fi
 # fi
 
-if docker pull ghcr.io/uinta-labs/pando/agent:ac7c064873f19ce40c013a76e34ff0c432f37b82; then
+if docker pull --platform "${HOSTAPP_PLATFORM}" ghcr.io/uinta-labs/pando/agent:ac7c064873f19ce40c013a76e34ff0c432f37b82; then
     docker tag ghcr.io/uinta-labs/pando/agent:ac7c064873f19ce40c013a76e34ff0c432f37b82 pando-agent:preload
 else
     echo "Not able to pull pando agent image"
     exit 1
 fi
-
-docker pull alpine:3.19
 
 echo "Stopping docker..."
 kill -TERM "$(cat /var/run/docker.pid)"

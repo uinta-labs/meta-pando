@@ -6,4 +6,4 @@ RUN chmod a+x /entry.sh
 
 VOLUME /pando-data
 
-CMD /entry.sh
+CMD ["/entry.sh"]

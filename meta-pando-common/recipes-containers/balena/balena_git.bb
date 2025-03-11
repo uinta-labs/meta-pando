@@ -54,7 +54,7 @@ RRECOMMENDS:${PN}:class-target += "kernel-module-nf-nat"
 
 # oe-meta-go recipes try to build go-cross-native
 DEPENDS:remove:class-native = "go-cross-native"
-DEPENDS:append:class-native = " go-native"
+DEPENDS:append:class-native = " go"
 
 INSANE_SKIP:${PN} += "already-stripped"
 

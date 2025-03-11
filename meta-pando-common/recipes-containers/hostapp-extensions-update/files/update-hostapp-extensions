@@ -5,8 +5,8 @@ set -e
 # shellcheck disable=SC1091
 . /usr/libexec/os-helpers-logging
 
-BALENA_HOSTAPP_EXTENSIONS_FEATURE="io.balena.features.host-extension"
-BALENA_HOSTAPP_EXTENSIONS_DEFAULT="/etc/hostapp-extensions.conf"
+PANDO_HOSTAPP_EXTENSIONS_FEATURE="io.balena.features.host-extension"
+PANDO_HOSTAPP_EXTENSIONS_DEFAULT="/etc/hostapp-extensions.conf"
 DOCKER_OVERLAY_ROOT="/var/lib/docker/overlay2/"
 
 readonly script_name=$(basename "${0}")
@@ -30,7 +30,7 @@ done
 
 shift $#
 
-# Don't source before parsing args as balena-config-vars parses args too
+# Don't source before parsing args as pando-config-vars parses args too
 # shellcheck disable=SC1091
 . /usr/sbin/pando-config-vars
 
@@ -72,7 +72,7 @@ umount_merged() {
 # Image default from /etc/hostapp-extensions.conf
 if [ -z "${target_hostext_images}" ]; then
 	if [ -z "${HOSTEXT_IMAGES}" ]; then
-		target_hostext_images=$(cat ${BALENA_HOSTAPP_EXTENSIONS_DEFAULT})
+		target_hostext_images=$(cat ${PANDO_HOSTAPP_EXTENSIONS_DEFAULT})
 	else
 		target_hostext_images="${HOSTEXT_IMAGES}"
 	fi
@@ -111,7 +111,7 @@ done
 
 info "Removing previous hostapp extensions"
 
-for image in $(${DOCKER} images --all --quiet --filter label="${BALENA_HOSTAPP_EXTENSIONS_FEATURE}"); do
+for image in $(${DOCKER} images --all --quiet --filter label="${PANDO_HOSTAPP_EXTENSIONS_FEATURE}"); do
 	imagetag=$(${DOCKER} inspect "${image}" --format='{{index .RepoTags 0}}' 2>/dev/null)
 	cids=$(${DOCKER} ps --all --quiet --no-trunc --filter ancestor="${image}" | tr '\n' ' ')
 	case "${target_hostext_images}" in
@@ -145,7 +145,7 @@ if [ -n "${target_hostext_images}" ]; then
 			error "   - failed to install"
 			break
 		else
-			if ! ${DOCKER} create --runtime="bare" --label "${BALENA_HOSTAPP_EXTENSIONS_FEATURE}" "${hostext}" none  > /dev/null 2>&1; then
+			if ! ${DOCKER} create --runtime="bare" --label "${PANDO_HOSTAPP_EXTENSIONS_FEATURE}" "${hostext}" none  > /dev/null 2>&1; then
 				error "   - failed to spawn"
 				break
 			fi

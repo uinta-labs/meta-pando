@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DOCKER=/usr/bin/balena
+DOCKER=${DOCKER:-/usr/bin/balena}
 
 CONTAINER_NAME="pando-agent"
 
+reset_agent() {
+    $DOCKER kill $CONTAINER_NAME || echo "Failed to kill ${CONTAINER_NAME}"
+    $DOCKER rm $CONTAINER_NAME || echo "Failed to remove ${CONTAINER_NAME}"
+    sleep 5 # Cool jets, turbo (boot loops suck)
+}
+
 if $DOCKER ps --filter name=$CONTAINER_NAME -q; then
-    current_state=$($DOCKER ps --filter name=$CONTAINER_NAME --format '{{.State}}')
+    current_state=$($DOCKER ps --all --filter name=$CONTAINER_NAME --format '{{.State}}')
     if [ "$current_state" = 'running' ]; then
         exit 0;
+    elif [ "$current_state" = 'exited']; then
+        echo "Current state is 'exited'; resetting..."
+        reset_agent
+    elif [ "$current_state" = "" ]; then
+        echo "Current state is unknown; resetting..."
+        reset_agent
     else
         echo "$CONTAINER_NAME state is ${current_state}; will attempt to start"
     fi
@@ -18,12 +30,11 @@ if $DOCKER ps --filter name=$CONTAINER_NAME -q; then
         exit 0
     else
         echo "Attempting to remove existing container"
-        $DOCKER kill $CONTAINER_NAME || echo "Failed to kill ${CONTAINER_NAME}"
-        $DOCKER rm $CONTAINER_NAME || echo "Failed to remove ${CONTAINER_NAME}"
+        reset_agent
     fi
 fi
 
-/usr/bin/balena run \
+$DOCKER run \
     --privileged \
     --name pando-agent \
     --restart=always \
