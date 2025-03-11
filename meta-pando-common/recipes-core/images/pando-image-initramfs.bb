@@ -3,12 +3,14 @@ the Minimal RAM-based Initial Root Filesystem (initramfs), which finds the \
 first 'init' program more efficiently. This is used to prepare the rootfs \
 with some key operations."
 
+
+### glibc-gconv
+### glibc-gconv-ibm437
+### glibc-gconv-ibm850
+
 PACKAGE_INSTALL = " \
     base-passwd \
     busybox \
-    glibc-gconv \
-    glibc-gconv-ibm437 \
-    glibc-gconv-ibm850 \
     initramfs-module-debug \
     initramfs-module-fsuuidsinit \
     initramfs-module-prepare \

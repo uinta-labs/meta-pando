@@ -46,7 +46,7 @@ PANDO_STATE_FS_LABEL = "flash-state"
 PANDO_DATA_FS_LABEL = "flash-data"
 
 # add the secure boot keys if needed
-# PANDO_BOOT_PARTITION_FILES:append = "${@oe.utils.conditional('SIGN_API','','',' balena-keys:/balena-keys/',d)}"
+# PANDO_BOOT_PARTITION_FILES:append = "${@oe.utils.conditional('SIGN_API','','',' pando-keys:/pando-keys/',d)}"
 
 # add the LUKS variant of GRUB config if needed
 PANDO_BOOT_PARTITION_FILES:append = "${@bb.utils.contains('MACHINE_FEATURES','efi',' grub.cfg_internal_luks:','',d)}"
@@ -55,7 +55,7 @@ PANDO_BOOT_PARTITION_FILES:append = "${@bb.utils.contains('MACHINE_FEATURES','ef
 ### PANDO_BOOT_PARTITION_FILES:append = " boot-logo.png:/splash/boot-logo.png"
 
 # add the generated <machine-name>.json to the flash-boot partition, renamed as device-type.json
-PANDO_BOOT_PARTITION_FILES:append = " ${PANDO_COREBASE}/../../../${MACHINE}.json:/device-type.json"
+### PANDO_BOOT_PARTITION_FILES:append = " ${PANDO_COREBASE}/../../../${MACHINE}.json:/device-type.json"
 
 # Put pando-image in the flasher rootfs
 add_pando_image_to_flasher_rootfs() {

@@ -94,7 +94,7 @@ PANDO_BOOT_PARTITION_FILES:append = "${@oe.utils.conditional('SIGN_API','','','p
 PANDO_BOOT_PARTITION_FILES:append = "${@bb.utils.contains('MACHINE_FEATURES','efi',' grub.cfg_internal_luks:/EFI/BOOT/grub-luks.cfg','',d)}"
 
 # add the generated <machine-name>.json to the pando-boot partition, renamed as device-type.json
-PANDO_BOOT_PARTITION_FILES:append = " ${PANDO_COREBASE}/../../../${MACHINE}.json:/device-type.json"
+### PANDO_BOOT_PARTITION_FILES:append = " ${PANDO_COREBASE}/../../../${MACHINE}.json:/device-type.json"
 
 ### example NetworkManager config file
 ###PANDO_BOOT_PARTITION_FILES:append = " \
@@ -104,15 +104,10 @@ PANDO_BOOT_PARTITION_FILES:append = " ${PANDO_COREBASE}/../../../${MACHINE}.json
 
 PANDO_BOOT_PARTITION_FILES:append = "${@ ' extra_uEnv.txt:/extra_uEnv.txt ' if d.getVar('UBOOT_MACHINE') or d.getVar('UBOOT_CONFIG') else ''}"
 
-# Resin image flag file
+# image flag file
 PANDO_BOOT_PARTITION_FILES:append = " ${PANDO_IMAGE_FLAG_FILE}:/${PANDO_IMAGE_FLAG_FILE}"
 
-### addtask pandoos_boot_dirgen_and_deploy after do_rootfs before do_image_complete
-### addtask image_size_check after do_image_pandoos_img before do_image_complete
-
 addtask image_size_check after do_image_pandoos_img before do_image_complete
-### do_resin_boot_dirgen_and_deploy[depends] += "redsocks:do_deploy"
-### do_pandoos_boot_dirgen_and_deploy[depends] += "networkmanager:do_deploy"
 addtask do_pandoos_boot_dirgen_and_deploy after do_image before do_image_complete
 
 SIGNING_ARTIFACTS = "${PANDO_RAW_IMG}"

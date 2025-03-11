@@ -23,7 +23,7 @@ CONNECTIVITY_FIRMWARES ?= " \
 CONNECTIVITY_PACKAGES = " \
     ${NETWORK_MANAGER_PACKAGES} \
     avahi-daemon \
-    balena-net-connectivity-wait \
+    pando-net-connectivity-wait \
     dnsmasq \
     openssh \
     usb-modeswitch \

@@ -9,7 +9,7 @@ inherit packagegroup
 ### os-config
 ### os-fan-profile
 ### os-power-mode
-### ${BALENA_REGISTER}
+### ${PANDO_REGISTER}
 
 RDEPENDS:${PN} = " \
     ${@bb.utils.contains('DISTRO_FEATURES', 'systemd', 'systemd-analyze', '', d)} \
