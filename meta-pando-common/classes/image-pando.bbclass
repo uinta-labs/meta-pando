@@ -50,8 +50,9 @@ init_config_json() {
    echo "$(cat ${1}/config.json | jq -S ".persistentLogging=false")" > ${1}/config.json
 
    # Find board json and extract slug
-   json_path=${PANDO_COREBASE}/../../../${MACHINE}.json
-   slug=$(jq .slug $json_path)
+#    json_path=${PANDO_COREBASE}/../../../${MACHINE}.json
+#    slug=$(jq .slug $json_path)
+   slug="${MACHINE}"
 
    # Set deviceType for supervisor
    echo "$(cat ${1}/config.json | jq -S ".deviceType=$slug")" > ${1}/config.json
@@ -152,7 +153,6 @@ hup_sanity_check() {
 
 # Generate the boot partition directory and deploy it to rootfs
 do_pandoos_boot_dirgen_and_deploy () {
-    bbwarn "[ORANGES] do_pandoos_boot_dirgen_and_deploy called"
     echo "Generating work directory for pando-boot partition..."
     rm -rf ${PANDO_BOOT_WORKDIR}
     for PANDO_BOOT_PARTITION_FILE in ${PANDO_BOOT_PARTITION_FILES}; do
@@ -319,20 +319,21 @@ def get_rel_path(layers, rel, d):
     return ''
 
 def get_slug(d):
-    import json
-    slug = "unknown"
+    # import json
+    # slug = "unknown"
     machine = d.getVar("MACHINE", True)
-    pandoboardpath = get_rel_path(['meta-pando-common'], '../../../', d)
-    if not pandoboardpath:
-        return slug
-    jsonfile = os.path.normpath(os.path.join(pandoboardpath, machine + ".json"))
-    try:
-        with open(jsonfile, 'r') as fd:
-            machinejson = json.load(fd)
-        slug = machinejson['slug']
-    except:
-        pass
-    return slug
+    return machine
+    # pandoboardpath = get_rel_path(['meta-pando-common'], '../../../', d)
+    # if not pandoboardpath:
+    #     return slug
+    # jsonfile = os.path.normpath(os.path.join(pandoboardpath, machine + ".json"))
+    # try:
+    #     with open(jsonfile, 'r') as fd:
+    #         machinejson = json.load(fd)
+    #     slug = machinejson['slug']
+    # except:
+    #     pass
+    # return slug
 
 # Sets os specific revisions in os-release
 python os_release_extra_data() {

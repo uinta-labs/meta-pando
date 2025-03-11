@@ -141,9 +141,6 @@ SIGN_KMOD_KEY_APPEND ?= ""
 SIGN_EFI_PK_KEY_ID ?= "replace-me-pk"
 SIGN_EFI_KEK_KEY_ID ?= "replace-me-kek"
 
-# Default Remote API environment
-PANDO_API_ENV ?= "upd80.com"
-
 # Default storage of configuration units
 PANDO_CONF_UNIT_STORE ?= "/var/volatile"
 

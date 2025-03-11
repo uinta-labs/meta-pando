@@ -8,7 +8,7 @@ ADD example_module /usr/src/app/example_module_headers_src/
 ADD kernel_modules_headers.tar.gz /usr/src/app/
 WORKDIR /usr/src/app
 
-# Workaround for a subtle issue in the linker path. Debian defaults to /lib64/ld-linux-x86-64.so.2 while balenaOS defaults to /lib/ld-linux-x86-64.so.2 for os/headers. Affects NUC.
+# Workaround for a subtle issue in the linker path. Debian defaults to /lib64/ld-linux-x86-64.so.2 while Pando OS defaults to /lib/ld-linux-x86-64.so.2 for os/headers. Affects NUC.
 RUN if [ -f /lib64/ld-linux-x86-64.so.2 ]; then \
 	if [ ! -f /lib/ld-linux-x86-64.so.2 ]; then \
 		ln -s /lib64/ld-linux-x86-64.so.2  /lib/ld-linux-x86-64.so.2 ; \
